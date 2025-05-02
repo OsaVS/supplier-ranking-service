@@ -66,9 +66,10 @@ A Django-based web application that uses Q-learning algorithms to rank suppliers
    - Configure database settings
    - Set DEBUG mode appropriately
 
-5. **Set up the database**
+5. **Apply migrations**
 
    ```bash
+   python manage.py makemigrations
    python manage.py migrate
    ```
 

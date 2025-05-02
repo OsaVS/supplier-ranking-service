@@ -43,7 +43,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'q_learning',  # Custom app for Q-learning
+    'api',
 ]
 
 MIDDLEWARE = [
