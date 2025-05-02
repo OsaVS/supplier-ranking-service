@@ -30,7 +30,7 @@ A Django-based web application that uses Q-learning algorithms to rank suppliers
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/yourusername/supplier-ranking-service.git
+   git clone https://github.com/IASSCMS/supplier-ranking-service.git
    cd supplier-ranking-service
    ```
 
