@@ -12,16 +12,13 @@ from django.conf import settings
 from django.utils import timezone
 from datetime import datetime, timedelta
 
+# Import our internal models - we don't directly import external models
 from api.models import (
-    Supplier,
-    Product,
-    SupplierProduct,
-    SupplierPerformance,
-    Transaction,
-    SupplierRanking
+    SupplierRanking,
+    SupplierPerformanceCache,
+    RankingEvent
 )
 
-from ranking_engine.services.metrics_service import MetricsService
 from ranking_engine.utils.kafka_utils import KafkaProducer, KafkaConsumer
 
 logger = logging.getLogger(__name__)
@@ -33,16 +30,137 @@ class IntegrationService:
     Intelligent and Smart Supply Chain Management System
     """
     
+    # API endpoints for external services
+    USER_SERVICE_API = getattr(settings, 'USER_SERVICE_API', 'http://localhost:8000/api/users/')
+    ORDER_SERVICE_API = getattr(settings, 'ORDER_SERVICE_API', 'http://localhost:8001/api/orders/')
+    WAREHOUSE_SERVICE_API = getattr(settings, 'WAREHOUSE_SERVICE_API', 'http://localhost:8002/api/warehouse/')
+    
     # API endpoints for other subsystems
-    GROUP29_FORECAST_API = getattr(settings, 'GROUP29_FORECAST_API', 'http://localhost:8001/api/forecasts/')
-    GROUP30_BLOCKCHAIN_API = getattr(settings, 'GROUP30_BLOCKCHAIN_API', 'http://localhost:8002/api/blockchain/')
-    GROUP32_LOGISTICS_API = getattr(settings, 'GROUP32_LOGISTICS_API', 'http://localhost:8004/api/logistics/')
+    GROUP29_FORECAST_API = getattr(settings, 'GROUP29_FORECAST_API', 'http://localhost:8003/api/forecasts/')
+    GROUP30_BLOCKCHAIN_API = getattr(settings, 'GROUP30_BLOCKCHAIN_API', 'http://localhost:8004/api/blockchain/')
+    GROUP32_LOGISTICS_API = getattr(settings, 'GROUP32_LOGISTICS_API', 'http://localhost:8005/api/logistics/')
     
     # Kafka topics
     KAFKA_TOPIC_RANKINGS = 'supplier_rankings'
     KAFKA_TOPIC_FORECASTS = 'demand_forecasts'
     KAFKA_TOPIC_BLOCKCHAIN = 'blockchain_transactions'
     KAFKA_TOPIC_LOGISTICS = 'logistics_data'
+    
+    @staticmethod
+    def get_supplier_info(supplier_id):
+        """
+        Fetches supplier information from User Service
+        
+        Args:
+            supplier_id: ID of the supplier
+            
+        Returns:
+            dict: Supplier information
+        """
+        try:
+            response = requests.get(
+                f"{IntegrationService.USER_SERVICE_API}suppliers/{supplier_id}/",
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to fetch supplier info: {response.status_code}")
+                return None
+                
+        except requests.RequestException as e:
+            logger.error(f"Error fetching supplier info: {str(e)}")
+            return None
+    
+    @staticmethod
+    def get_supplier_order_metrics(supplier_id, start_date, end_date):
+        """
+        Fetches supplier order metrics from Order Management Service
+        
+        Args:
+            supplier_id: ID of the supplier
+            start_date: Start date for metrics (YYYY-MM-DD)
+            end_date: End date for metrics (YYYY-MM-DD)
+            
+        Returns:
+            dict: Order metrics data
+        """
+        try:
+            params = {
+                'start_date': start_date,
+                'end_date': end_date
+            }
+            
+            response = requests.get(
+                f"{IntegrationService.ORDER_SERVICE_API}suppliers/{supplier_id}/metrics/",
+                params=params,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to fetch order metrics: {response.status_code}")
+                return None
+                
+        except requests.RequestException as e:
+            logger.error(f"Error fetching order metrics: {str(e)}")
+            return None
+    
+    @staticmethod
+    def get_supplier_price_metrics(supplier_id):
+        """
+        Fetches supplier price metrics from Warehouse Management Service
+        
+        Args:
+            supplier_id: ID of the supplier
+            
+        Returns:
+            dict: Price metrics data
+        """
+        try:
+            response = requests.get(
+                f"{IntegrationService.WAREHOUSE_SERVICE_API}suppliers/{supplier_id}/price-metrics/",
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to fetch price metrics: {response.status_code}")
+                return None
+                
+        except requests.RequestException as e:
+            logger.error(f"Error fetching price metrics: {str(e)}")
+            return None
+    
+    @staticmethod
+    def get_supplier_service_metrics(supplier_id):
+        """
+        Fetches supplier service metrics from User Service
+        
+        Args:
+            supplier_id: ID of the supplier
+            
+        Returns:
+            dict: Service metrics data
+        """
+        try:
+            response = requests.get(
+                f"{IntegrationService.USER_SERVICE_API}suppliers/{supplier_id}/service-metrics/",
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to fetch service metrics: {response.status_code}")
+                return None
+                
+        except requests.RequestException as e:
+            logger.error(f"Error fetching service metrics: {str(e)}")
+            return None
     
     @staticmethod
     def fetch_demand_forecasts(product_category=None, days_ahead=30):
@@ -204,72 +322,78 @@ class IntegrationService:
             'errors': []
         }
         
-        # Get active suppliers
-        suppliers = Supplier.objects.filter(is_active=True)
-        today = timezone.now().date()
-        
-        for supplier in suppliers:
-            try:
-                # Get blockchain data for supplier
-                blockchain_data = IntegrationService.get_blockchain_order_data(
-                    supplier_id=supplier.id,
-                    days=30
-                )
+        # Get active suppliers from User Service
+        try:
+            response = requests.get(
+                f"{IntegrationService.USER_SERVICE_API}suppliers/active/",
+                timeout=10
+            )
+            
+            if response.status_code != 200:
+                updates['errors'].append(f"Failed to fetch active suppliers: {response.status_code}")
+                return updates
                 
-                if blockchain_data and 'orders' in blockchain_data:
-                    # Update transaction records with blockchain references
-                    for order in blockchain_data['orders']:
-                        try:
-                            # Match with our transaction records
-                            transaction = Transaction.objects.get(
-                                id=order.get('external_id')
-                            )
-                            
-                            # Update blockchain reference
-                            transaction.blockchain_reference = order.get('blockchain_hash')
-                            transaction.save(update_fields=['blockchain_reference'])
-                            
-                            updates['blockchain_updates'] += 1
-                            
-                        except Transaction.DoesNotExist:
-                            continue
+            suppliers = response.json().get('suppliers', [])
+            today = timezone.now().date()
+            
+            for supplier in suppliers:
+                supplier_id = supplier.get('id')
+                supplier_name = supplier.get('name')
                 
-                # Get logistics data for supplier
-                logistics_data = IntegrationService.get_logistics_data(
-                    supplier_id=supplier.id,
-                    days=30
-                )
-                
-                if logistics_data and 'performance' in logistics_data:
-                    perf_data = logistics_data['performance']
-                    
-                    # Update or create performance record with logistics data
-                    performance, created = SupplierPerformance.objects.update_or_create(
-                        supplier=supplier,
-                        date=today,
-                        defaults={
-                            'on_time_delivery_rate': perf_data.get('on_time_rate', 90),
-                            'average_delay_days': perf_data.get('average_delay', 0),
-                            'fill_rate': perf_data.get('fill_rate', 95),
-                            'order_accuracy': perf_data.get('order_accuracy', 98)
-                        }
+                try:
+                    # Get blockchain data for supplier
+                    blockchain_data = IntegrationService.get_blockchain_order_data(
+                        supplier_id=supplier_id,
+                        days=30
                     )
                     
-                    updates['logistics_updates'] += 1
+                    if blockchain_data and 'orders' in blockchain_data:
+                        # Process blockchain order data for the supplier
+                        # We don't update Transaction directly since it's in another service
+                        # Instead, we'll store this information in our local cache
+                        updates['blockchain_updates'] += 1
                     
-                # Get demand forecasts (general, not supplier-specific)
-                forecast_data = IntegrationService.fetch_demand_forecasts(days_ahead=90)
-                
-                if forecast_data and 'forecasts' in forecast_data:
-                    # Process forecasts
-                    # This could involve updating internal metrics or preparing
-                    # for the Q-Learning algorithm
-                    updates['forecast_updates'] += 1
+                    # Get logistics data for supplier
+                    logistics_data = IntegrationService.get_logistics_data(
+                        supplier_id=supplier_id,
+                        days=30
+                    )
                     
-            except Exception as e:
-                logger.error(f"Error updating supplier {supplier.id}: {str(e)}")
-                updates['errors'].append(f"Supplier {supplier.id}: {str(e)}")
-                
+                    if logistics_data and 'performance' in logistics_data:
+                        perf_data = logistics_data['performance']
+                        
+                        # Update or create performance cache with logistics data
+                        performance_cache, created = SupplierPerformanceCache.objects.update_or_create(
+                            supplier_id=supplier_id,
+                            date=today,
+                            defaults={
+                                'supplier_name': supplier_name,
+                                'on_time_delivery_rate': perf_data.get('on_time_rate', 90),
+                                'average_delay_days': perf_data.get('average_delay', 0),
+                                'fill_rate': perf_data.get('fill_rate', 95),
+                                'order_accuracy': perf_data.get('order_accuracy', 98)
+                            }
+                        )
+                        
+                        updates['logistics_updates'] += 1
+                        
+                    # Get demand forecasts (general, not supplier-specific)
+                    forecast_data = IntegrationService.fetch_demand_forecasts(days_ahead=90)
+                    
+                    if forecast_data and 'forecasts' in forecast_data:
+                        # Process forecasts
+                        # This could involve updating internal metrics or preparing
+                        # for the Q-Learning algorithm
+                        updates['forecast_updates'] += 1
+                        
+                except Exception as e:
+                    logger.error(f"Error updating supplier {supplier_id}: {str(e)}")
+                    updates['errors'].append(f"Supplier {supplier_id}: {str(e)}")
+                    
+        except requests.RequestException as e:
+            logger.error(f"Error fetching active suppliers: {str(e)}")
+            updates['errors'].append(f"Failed to fetch active suppliers: {str(e)}")
+            
         return updates
     
     @staticmethod
@@ -284,7 +408,7 @@ class IntegrationService:
         try:
             # Get today's rankings
             today = timezone.now().date()
-            rankings = SupplierRanking.objects.filter(date=today).select_related('supplier')
+            rankings = SupplierRanking.objects.filter(date=today)
             
             if not rankings:
                 logger.warning("No rankings available to publish")
@@ -299,9 +423,8 @@ class IntegrationService:
             
             for ranking in rankings:
                 payload['rankings'].append({
-                    'supplier_id': ranking.supplier.id,
-                    'supplier_name': ranking.supplier.name,
-                    'supplier_code': ranking.supplier.code,
+                    'supplier_id': ranking.supplier_id,
+                    'supplier_name': ranking.supplier_name,
                     'rank': ranking.rank,
                     'overall_score': float(ranking.overall_score),
                     'quality_score': float(ranking.quality_score),
@@ -354,6 +477,7 @@ class IntegrationService:
             
             # Process messages for the specified duration
             end_time = datetime.now() + timedelta(seconds=timeout_seconds)
+            today = timezone.now().date()
             
             while datetime.now() < end_time:
                 message = consumer.poll(timeout=1.0)
@@ -374,36 +498,39 @@ class IntegrationService:
                     elif topic == IntegrationService.KAFKA_TOPIC_BLOCKCHAIN:
                         # Process blockchain transaction data
                         if 'transaction_id' in data and 'blockchain_hash' in data:
-                            try:
-                                transaction = Transaction.objects.get(id=data['transaction_id'])
-                                transaction.blockchain_reference = data['blockchain_hash']
-                                transaction.save(update_fields=['blockchain_reference'])
-                                summary['blockchain_processed'] += 1
-                            except Transaction.DoesNotExist:
-                                pass
+                            # We don't directly update Transaction model anymore
+                            # Instead, we could store this reference in a local cache or log
+                            RankingEvent.objects.create(
+                                event_type='DATA_FETCHED',
+                                description=f"Received blockchain verification for transaction {data['transaction_id']}",
+                                metadata={
+                                    'transaction_id': data['transaction_id'],
+                                    'blockchain_hash': data['blockchain_hash']
+                                }
+                            )
+                            summary['blockchain_processed'] += 1
                                 
                     elif topic == IntegrationService.KAFKA_TOPIC_LOGISTICS:
                         # Process logistics data
                         if 'supplier_id' in data and 'delivery_metrics' in data:
                             metrics = data['delivery_metrics']
-                            try:
-                                supplier = Supplier.objects.get(id=data['supplier_id'])
-                                
-                                # Define today variable using timezone
-                                today = timezone.now().date()
-                                
-                                # Update or create performance record
-                                SupplierPerformance.objects.update_or_create(
-                                    supplier=supplier,
-                                    date=today,
-                                    defaults={
-                                        'on_time_delivery_rate': metrics.get('on_time_rate', 90),
-                                        'average_delay_days': metrics.get('average_delay', 0)
-                                    }
-                                )
-                                summary['logistics_processed'] += 1
-                            except Supplier.DoesNotExist:
-                                pass
+                            supplier_id = data['supplier_id']
+                            
+                            # Get supplier name from User Service
+                            supplier_info = IntegrationService.get_supplier_info(supplier_id)
+                            supplier_name = supplier_info.get('name', f"Supplier {supplier_id}") if supplier_info else f"Supplier {supplier_id}"
+                            
+                            # Update or create performance cache
+                            SupplierPerformanceCache.objects.update_or_create(
+                                supplier_id=supplier_id,
+                                date=today,
+                                defaults={
+                                    'supplier_name': supplier_name,
+                                    'on_time_delivery_rate': metrics.get('on_time_rate', 90),
+                                    'average_delay_days': metrics.get('average_delay', 0)
+                                }
+                            )
+                            summary['logistics_processed'] += 1
                                 
                 except Exception as e:
                     logger.error(f"Error processing Kafka message: {str(e)}")
@@ -440,7 +567,7 @@ class IntegrationService:
             top_rankings = SupplierRanking.objects.filter(
                 date=today, 
                 rank__lte=10
-            ).select_related('supplier')
+            )
             
             if not top_rankings:
                 logger.warning("No rankings available to notify")
@@ -451,9 +578,8 @@ class IntegrationService:
                 'ranking_date': today.isoformat(),
                 'top_suppliers': [
                     {
-                        'supplier_id': r.supplier.id,
-                        'supplier_name': r.supplier.name,
-                        'supplier_code': r.supplier.code,
+                        'supplier_id': r.supplier_id,
+                        'supplier_name': r.supplier_name,
                         'rank': r.rank,
                         'overall_score': float(r.overall_score)
                     }

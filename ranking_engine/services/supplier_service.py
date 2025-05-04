@@ -2,74 +2,118 @@
 Supplier Service - Handles all supplier-related operations
 
 This service acts as an abstraction layer for all supplier-related operations,
-including CRUD operations and data retrieval for the ranking system.
+including data retrieval for the ranking system through external service connectors.
 """
 
-from django.db.models import Avg, Count, F, Max, Min, Q, Sum
 from django.utils import timezone
 from datetime import date, timedelta
-from api.models import (
-    Supplier, 
-    SupplierProduct, 
-    SupplierPerformance, 
-    Transaction,
-    SupplierRanking
-)
+import logging
+from api.models import SupplierRanking
+from connectors.user_service_connector import UserServiceConnector
+from connectors.warehouse_service_connector import WarehouseServiceConnector
+from connectors.order_service_connector import OrderServiceConnector
 
+logger = logging.getLogger(__name__)
 
 class SupplierService:
-    """Service for managing supplier operations"""
+    """Service for managing supplier operations through external service connectors"""
     
-    @staticmethod
-    def get_active_suppliers():
-        """
-        Returns all active suppliers
-        """
-        return Supplier.objects.filter(is_active=True)
+    def __init__(self):
+        """Initialize service with connectors to external services"""
+        self.user_service = UserServiceConnector()
+        self.warehouse_service = WarehouseServiceConnector()
+        self.order_service = OrderServiceConnector()
     
-    @staticmethod
-    def get_supplier_by_id(supplier_id):
+    def get_active_suppliers(self):
         """
-        Returns a specific supplier by ID
+        Returns all active suppliers from User Service
         """
         try:
-            return Supplier.objects.get(id=supplier_id)
-        except Supplier.DoesNotExist:
+            return self.user_service.get_active_suppliers()
+        except Exception as e:
+            logger.error(f"Error retrieving active suppliers: {str(e)}")
+            return []
+    
+    def get_active_supplier_ids(self):
+        """
+        Returns IDs of all active suppliers
+        """
+        try:
+            suppliers = self.user_service.get_active_suppliers()
+            return [supplier.get('id') for supplier in suppliers]
+        except Exception as e:
+            logger.error(f"Error retrieving active supplier IDs: {str(e)}")
+            return []
+    
+    def get_active_supplier_count(self):
+        """
+        Returns count of active suppliers
+        """
+        try:
+            return self.user_service.get_active_supplier_count()
+        except Exception as e:
+            logger.error(f"Error retrieving active supplier count: {str(e)}")
+            return 0
+    
+    def get_supplier(self, supplier_id):
+        """
+        Returns a specific supplier by ID from User Service
+        """
+        try:
+            return self.user_service.get_supplier_by_id(supplier_id)
+        except Exception as e:
+            logger.error(f"Error retrieving supplier {supplier_id}: {str(e)}")
             return None
     
-    @staticmethod
-    def get_supplier_products(supplier_id):
+    def get_supplier_info(self, supplier_id):
         """
-        Returns all products offered by a supplier
+        Returns detailed supplier information from User Service
         """
-        return SupplierProduct.objects.filter(supplier_id=supplier_id)
+        try:
+            supplier = self.user_service.get_supplier_by_id(supplier_id)
+            if supplier:
+                # Enhance with additional information if needed
+                return supplier
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving supplier info for {supplier_id}: {str(e)}")
+            return None
     
-    @staticmethod
-    def get_supplier_performance_history(supplier_id, days=90):
+    def get_supplier_products(self, supplier_id):
         """
-        Returns performance history for a supplier for the given time period
+        Returns all products offered by a supplier from Warehouse Service
         """
-        start_date = date.today() - timedelta(days=days)
-        return SupplierPerformance.objects.filter(
-            supplier_id=supplier_id,
-            date__gte=start_date
-        ).order_by('date')
+        try:
+            return self.warehouse_service.get_supplier_products(supplier_id)
+        except Exception as e:
+            logger.error(f"Error retrieving products for supplier {supplier_id}: {str(e)}")
+            return []
     
-    @staticmethod
-    def get_supplier_transactions(supplier_id, days=90):
+    def get_supplier_performance_history(self, supplier_id, days=90):
         """
-        Returns transaction history for a supplier for the given time period
+        Returns performance history for a supplier for the given time period from Order Service
         """
-        start_date = timezone.now() - timedelta(days=days)
-        return Transaction.objects.filter(
-            supplier_id=supplier_id,
-            order_date__gte=start_date
-        ).order_by('-order_date')
+        try:
+            start_date = date.today() - timedelta(days=days)
+            return self.order_service.get_supplier_performance(supplier_id, start_date=start_date)
+        except Exception as e:
+            logger.error(f"Error retrieving performance history for supplier {supplier_id}: {str(e)}")
+            return []
     
-    @staticmethod
-    def get_supplier_ranking_history(supplier_id, days=90):
+    def get_supplier_transactions(self, supplier_id, days=90):
         """
-        Returns ranking history for a supplier
+        Returns transaction history for a supplier from Order Service
+        """
+        try:
+            start_date = timezone.now() - timedelta(days=days)
+            return self.order_service.get_supplier_transactions(supplier_id, start_date=start_date)
+        except Exception as e:
+            logger.error(f"Error retrieving transactions for supplier {supplier_id}: {str(e)}")
+            return []
+    
+    def get_supplier_ranking_history(self, supplier_id, days=90):
+        """
+        Returns ranking history for a supplier from our local database
         """
         start_date = date.today() - timedelta(days=days)
         return SupplierRanking.objects.filter(
@@ -77,22 +121,25 @@ class SupplierService:
             date__gte=start_date
         ).order_by('date')
     
-    @staticmethod
-    def get_latest_supplier_rankings():
+    def get_latest_supplier_rankings(self):
         """
-        Returns the most recent ranking for each supplier
+        Returns the most recent ranking for each supplier from our local database
         """
+        from django.db.models import Max
+        
         latest_date = SupplierRanking.objects.aggregate(Max('date'))['date__max']
         if not latest_date:
             return []
             
         return SupplierRanking.objects.filter(date=latest_date).order_by('rank')
     
-    @staticmethod
-    def get_top_ranked_suppliers(count=10, category=None):
+    def get_top_ranked_suppliers(self, count=10, category=None):
         """
         Returns the top ranked suppliers, optionally filtered by product category
         """
+        from django.db.models import Max
+        
+        # Get latest rankings
         latest_date = SupplierRanking.objects.aggregate(Max('date'))['date__max']
         if not latest_date:
             return []
@@ -100,83 +147,32 @@ class SupplierService:
         rankings = SupplierRanking.objects.filter(date=latest_date).order_by('rank')
         
         if category:
-            # Filter by suppliers who offer products in the specified category
-            supplier_ids = SupplierProduct.objects.filter(
-                product__category=category
-            ).values_list('supplier_id', flat=True).distinct()
-            
-            rankings = rankings.filter(supplier_id__in=supplier_ids)
-            
+            # Get suppliers who offer products in the specified category
+            try:
+                supplier_ids = self.warehouse_service.get_suppliers_by_category(category)
+                rankings = rankings.filter(supplier_id__in=supplier_ids)
+            except Exception as e:
+                logger.error(f"Error filtering suppliers by category {category}: {str(e)}")
+        
         return rankings[:count]
     
-    @staticmethod
-    def get_supplier_category_performance(supplier_id):
+    def get_supplier_category_performance(self, supplier_id):
         """
-        Returns supplier performance grouped by product category
+        Returns supplier performance grouped by product category from Order Service
         """
-        # Get all product categories this supplier provides
-        categories = SupplierProduct.objects.filter(
-            supplier_id=supplier_id
-        ).values_list(
-            'product__category', flat=True
-        ).distinct()
-        
-        result = {}
-        for category in categories:
-            # Get products in this category
-            product_ids = SupplierProduct.objects.filter(
-                supplier_id=supplier_id,
-                product__category=category
-            ).values_list('product_id', flat=True)
-            
-            # Get transactions for these products
-            transactions = Transaction.objects.filter(
-                supplier_id=supplier_id,
-                product_id__in=product_ids
-            )
-            
-            # Calculate metrics
-            metrics = {
-                'total_orders': transactions.count(),
-                'on_time_delivery_rate': transactions.filter(
-                    actual_delivery_date__lte=F('expected_delivery_date')
-                ).count() / max(transactions.count(), 1) * 100,
-                'average_delay': transactions.filter(
-                    actual_delivery_date__gt=F('expected_delivery_date')
-                ).aggregate(
-                    avg_delay=Avg(F('actual_delivery_date') - F('expected_delivery_date'))
-                )['avg_delay'] or 0,
-                'defect_rate': transactions.aggregate(
-                    defect_sum=Sum('defect_count'),
-                    qty_sum=Sum('quantity')
-                )
-            }
-            
-            if metrics['defect_rate']['qty_sum']:
-                metrics['defect_rate'] = (
-                    metrics['defect_rate']['defect_sum'] / metrics['defect_rate']['qty_sum'] * 100
-                )
-            else:
-                metrics['defect_rate'] = 0
-                
-            result[category] = metrics
-            
-        return result
+        try:
+            return self.order_service.get_supplier_category_performance(supplier_id)
+        except Exception as e:
+            logger.error(f"Error retrieving category performance for supplier {supplier_id}: {str(e)}")
+            return {}
     
-    @staticmethod
-    def update_supplier_preferences(supplier_id, preferences_data):
+    def update_supplier_preferences(self, supplier_id, preferences_data):
         """
-        Updates preference flags for a supplier's products
+        Updates preference flags for a supplier's products through Warehouse Service
         """
-        for product_id, is_preferred in preferences_data.items():
-            try:
-                supplier_product = SupplierProduct.objects.get(
-                    supplier_id=supplier_id,
-                    product_id=product_id
-                )
-                supplier_product.is_preferred = is_preferred
-                supplier_product.save()
-            except SupplierProduct.DoesNotExist:
-                pass
-                
-        return True
+        try:
+            success = self.warehouse_service.update_supplier_preferences(supplier_id, preferences_data)
+            return success
+        except Exception as e:
+            logger.error(f"Error updating preferences for supplier {supplier_id}: {str(e)}")
+            return False

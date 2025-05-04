@@ -11,11 +11,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'suplier_ranking_service.settings')
 django.setup()
 
-# Import your models and services
+# Import your local models
 from api.models import (
-    Supplier, Product, SupplierProduct, SupplierPerformance,
-    Transaction, QLearningState, QLearningAction, QTableEntry, RankingConfiguration
+    QLearningState, QLearningAction, QTableEntry, RankingConfiguration,
+    SupplierRanking, RankingEvent
 )
+
+# Import service connectors
+from connectors.user_service_connector import UserServiceConnector
+from connectors.order_service_connector import OrderServiceConnector
+from connectors.warehouse_service_connector import WarehouseServiceConnector
+
+# Import your ranking components
 from ranking_engine.q_learning.agent import SupplierRankingAgent
 from ranking_engine.q_learning.environment import SupplierEnvironment
 from ranking_engine.q_learning.state_mapper import StateMapper
@@ -29,157 +36,40 @@ def setup_test_data():
     """Create test data for manual testing"""
     print("Creating test data...")
     
-    # Clear existing data (optional)
-    # SupplierRanking.objects.all().delete()
-    # Transaction.objects.all().delete()
-    # SupplierPerformance.objects.all().delete()
-    # SupplierProduct.objects.all().delete()
-    # Product.objects.all().delete() 
-    # Supplier.objects.all().delete()
+    # Initialize service connectors
+    user_service = UserServiceConnector()
+    order_service = OrderServiceConnector()
+    warehouse_service = WarehouseServiceConnector()
+    
+    # Clear existing local data (optional)
     # QTableEntry.objects.all().delete()
     # QLearningAction.objects.all().delete()
     # QLearningState.objects.all().delete()
     # RankingConfiguration.objects.all().delete()
+    # SupplierRanking.objects.all().delete()
+    # RankingEvent.objects.all().delete()
     
-    # Create suppliers
+    # For testing purposes, we'll log some information about external suppliers
     suppliers = []
-    supplier_names = [
-        "Quality First Suppliers", 
-        "Budget Materials Inc.", 
-        "FastTrack Logistics",
-        "Premium Components Ltd",
-        "Value Chain Solutions"
-    ]
+    supplier_ids = [1, 2, 3, 4, 5]  # Assuming these IDs exist in User Service
     
-    for i, name in enumerate(supplier_names):
-        code = f"SUP{i+1:03d}"
-        supplier = Supplier.objects.get_or_create(
-            name=name,
-            defaults={
-                'code': code,
-                'contact_email': f"contact@{name.lower().replace(' ', '')}.com",
-                'address': f"{i+100} Business Park",
-                'country': "Test Country",
-                'supplier_size': random.choice(['S', 'M', 'L', 'E']),
-                'credit_score': random.uniform(60, 95),
-                'average_lead_time': random.randint(3, 15)
-            }
-        )[0]
-        suppliers.append(supplier)
+    for supplier_id in supplier_ids:
+        supplier_info = user_service.get_supplier_info(supplier_id)
+        if supplier_info:
+            print(f"Found supplier: {supplier_info['name']} (ID: {supplier_info['id']})")
+            suppliers.append(supplier_info)
     
-    # Create products
-    products = []
-    product_data = [
-        {"name": "Electronic Component A", "category": "Electronics"},
-        {"name": "Metal Bracket B", "category": "Hardware"},
-        {"name": "Plastic Casing C", "category": "Packaging"}
-    ]
+    # Get some product information for testing
+    product_ids = [101, 102, 103]  # Assuming these IDs exist in Warehouse Service
     
-    for i, data in enumerate(product_data):
-        product = Product.objects.get_or_create(
-            name=data["name"],
-            defaults={
-                'sku': f"PROD{i+1:03d}",
-                'category': data["category"],
-                'unit_of_measure': "EA",
-                'is_active': True
-            }
-        )[0]
-        products.append(product)
+    for product_id in product_ids:
+        suppliers_for_product = warehouse_service.get_product_suppliers(product_id)
+        print(f"Product ID {product_id} has {len(suppliers_for_product)} suppliers")
     
-    # Link suppliers with products
-    for supplier in suppliers:
-        for product in products:
-            SupplierProduct.objects.get_or_create(
-                supplier=supplier,
-                product=product,
-                defaults={
-                    'unit_price': random.uniform(50, 200),
-                    'minimum_order_quantity': random.randint(5, 20),
-                    'lead_time_days': random.randint(2, 15),
-                    'is_preferred': random.choice([True, False])
-                }
-            )
-    
-    # Create performance records
-    today = date.today()
-    for supplier in suppliers:
-        # Create slightly different performance for each supplier
-        quality_base = random.uniform(6.5, 9.5)
-        delivery_base = random.uniform(6.5, 9.5)
-        price_base = random.uniform(6.5, 9.5)
-        
-        for days_ago in range(30, 0, -5):  # Create data points every 5 days
-            record_date = today - timedelta(days=days_ago)
-            
-            # Add some randomness to the scores over time
-            quality_variation = random.uniform(-0.5, 0.5)
-            delivery_variation = random.uniform(-0.5, 0.5)
-            price_variation = random.uniform(-0.5, 0.5)
-            
-            SupplierPerformance.objects.get_or_create(
-                supplier=supplier,
-                date=record_date,
-                defaults={
-                    'quality_score': min(max(quality_base + quality_variation, 0), 10),
-                    'defect_rate': random.uniform(0.5, 5.0),
-                    'return_rate': random.uniform(0.2, 3.0),
-                    'on_time_delivery_rate': min(max(delivery_base * 10 + random.uniform(-5, 5), 0), 100),
-                    'average_delay_days': random.uniform(0, 3.0),
-                    'price_competitiveness': min(max(price_base + price_variation, 0), 10),
-                    'responsiveness': random.uniform(6.0, 9.5),
-                    'fill_rate': random.uniform(90.0, 99.9),
-                    'order_accuracy': random.uniform(92.0, 99.9),
-                    'compliance_score': random.uniform(7.0, 9.5)
-                }
-            )
-    
-    # Create transactions with timezone-aware datetimes
-    now = django.utils.timezone.now()
-    for supplier in suppliers:
-        for product in products:
-            # Create multiple transactions for each supplier-product pair
-            for days_ago in range(60, 0, -3):  # Every 3 days for past 60 days
-                order_date = now - timedelta(days=days_ago)
-                
-                # Get the supplier product for lead time
-                try:
-                    supplier_product = SupplierProduct.objects.get(supplier=supplier, product=product)
-                    lead_time = supplier_product.lead_time_days
-                except SupplierProduct.DoesNotExist:
-                    lead_time = 5  # Default if not found
-                
-                expected_delivery = order_date.date() + timedelta(days=lead_time)
-                
-                # Determine if delivered on time, with quality issues, etc.
-                is_on_time = random.random() > 0.2  # 80% on-time rate
-                has_defects = random.random() > 0.8  # 20% have defects
-                
-                if is_on_time:
-                    actual_delivery = expected_delivery
-                    delay_days = 0
-                else:
-                    delay_days = random.randint(1, 5)
-                    actual_delivery = expected_delivery + timedelta(days=delay_days)
-                
-                defect_count = random.randint(1, 10) if has_defects else 0
-                
-                # Only create completed transactions
-                if actual_delivery <= today:
-                    Transaction.objects.get_or_create(
-                        supplier=supplier,
-                        product=product,
-                        order_date=order_date,
-                        expected_delivery_date=expected_delivery,
-                        defaults={
-                            'actual_delivery_date': actual_delivery,
-                            'quantity': random.randint(10, 100),
-                            'unit_price': supplier_product.unit_price,
-                            'status': "DELIVERED",
-                            'defect_count': defect_count,
-                            'blockchain_reference': f"BLOCK{random.randint(10000, 99999)}"
-                        }
-                    )
+    # Get some sample transaction data
+    for supplier_id in supplier_ids[:3]:  # Just check first 3 suppliers
+        performance_records = order_service.get_supplier_performance_records(supplier_id)
+        print(f"Supplier ID {supplier_id} has {len(performance_records)} performance records")
     
     # Create Q-Learning states
     states = []
@@ -253,11 +143,12 @@ def setup_test_data():
     )[0]
     
     print("Test data creation complete.")
-    return suppliers, products, config
+    return supplier_ids, product_ids, config
 
 
 def run_ranking_process():
     """Run the ranking process and display results"""
+    from datetime import date, datetime, timedelta
     print("\nInitializing ranking components...")
     
     # Get the configuration
@@ -283,15 +174,19 @@ def run_ranking_process():
     metrics_service = MetricsService()
     supplier_service = SupplierService()
     
+    # Initialize service connectors for the ranking service
+    user_service = UserServiceConnector()
+    order_service = OrderServiceConnector()
+    warehouse_service = WarehouseServiceConnector()
+    
     try:
-        # Create ranking service WITHOUT arguments - this is the key change
+        # Create ranking service
         ranking_service = RankingService()
         
         # Run the ranking process for the current date
         today = date.today()
         print(f"Generating supplier rankings for {today}...")
         
-        # If your RankingService implementation has these methods, use them:
         # Initialize service with needed components after creation
         if hasattr(ranking_service, 'set_agent'):
             ranking_service.set_agent(agent)
@@ -306,8 +201,15 @@ def run_ranking_process():
         if hasattr(ranking_service, 'set_config'):
             ranking_service.set_config(config)
         
+        # Set service connectors if they exist
+        if hasattr(ranking_service, 'set_user_service'):
+            ranking_service.set_user_service(user_service)
+        if hasattr(ranking_service, 'set_order_service'):
+            ranking_service.set_order_service(order_service)
+        if hasattr(ranking_service, 'set_warehouse_service'):
+            ranking_service.set_warehouse_service(warehouse_service)
+        
         # Use the method that works in your implementation
-        # Try the instance method first - check if it exists
         if hasattr(ranking_service, 'generate_rankings'):
             rankings = ranking_service.generate_rankings(today)
         else:
@@ -319,22 +221,30 @@ def run_ranking_process():
         # Display the rankings
         print("\nSupplier Rankings:")
         print("-" * 80)
-        print(f"{'Rank':<5}{'Supplier':<30}{'Overall':<10}{'Quality':<10}{'Delivery':<10}{'Price':<10}{'Service':<10}")
+        print(f"{'Rank':<5}{'Supplier ID':<12}{'Supplier Name':<30}{'Overall':<10}{'Quality':<10}{'Delivery':<10}{'Price':<10}{'Service':<10}")
         print("-" * 80)
         
         for ranking in sorted(rankings, key=lambda r: r.rank):
-            print(f"{ranking.rank:<5}{ranking.supplier.name:<30}{ranking.overall_score:<10.2f}"
+            print(f"{ranking.rank:<5}{ranking.supplier_id:<12}{ranking.supplier_name:<30}{ranking.overall_score:<10.2f}"
                   f"{ranking.quality_score:<10.2f}{ranking.delivery_score:<10.2f}"
                   f"{ranking.price_score:<10.2f}{ranking.service_score:<10.2f}")
         
         # Run a Q-learning training iteration if the method exists
         if hasattr(ranking_service, 'update_q_values_from_transactions'):
             print("\nUpdating Q-values from recent transactions...")
-            recent_transactions = Transaction.objects.filter(
-                actual_delivery_date__gte=today - timedelta(days=30)
-            )
+            # Here we'll need to get transaction data from the order service
+            # This is a placeholder - adjust according to your actual API
+            recent_transactions = []
+            supplier_ids = [r.supplier_id for r in rankings]
+            
+            for supplier_id in supplier_ids:
+                start_date = today - timedelta(days=30)
+                # Get transactions from order service
+                supplier_transactions = order_service.get_supplier_transactions(supplier_id, start_date)
+                recent_transactions.extend(supplier_transactions)
+                
             ranking_service.update_q_values_from_transactions(recent_transactions)
-            print(f"Updated Q-values based on {recent_transactions.count()} recent transactions.")
+            print(f"Updated Q-values based on {len(recent_transactions)} recent transactions.")
         
         return rankings
         
@@ -358,7 +268,8 @@ def visualize_results(rankings):
         pass
     
     # Prepare data
-    suppliers = [r.supplier.name for r in rankings]
+    supplier_ids = [r.supplier_id for r in rankings]
+    supplier_names = [r.supplier_name for r in rankings]
     overall_scores = [r.overall_score for r in rankings]
     quality_scores = [r.quality_score for r in rankings]
     delivery_scores = [r.delivery_score for r in rankings]
@@ -367,7 +278,7 @@ def visualize_results(rankings):
     
     # Create bar chart of overall scores
     plt.figure(figsize=(12, 6))
-    plt.bar(suppliers, overall_scores, color='blue')
+    plt.bar(supplier_names, overall_scores, color='blue')
     plt.title('Overall Supplier Scores')
     plt.xlabel('Supplier')
     plt.ylabel('Score')
@@ -384,16 +295,16 @@ def visualize_results(rankings):
     fig, ax = plt.subplots(figsize=(12, 6))
     
     # Create the bars
-    ax.bar(suppliers, quality_scores, width, label='Quality', color='#1f77b4')
-    ax.bar(suppliers, delivery_scores, width, bottom=quality_scores, label='Delivery', color='#ff7f0e')
+    ax.bar(supplier_names, quality_scores, width, label='Quality', color='#1f77b4')
+    ax.bar(supplier_names, delivery_scores, width, bottom=quality_scores, label='Delivery', color='#ff7f0e')
     
     # Calculate position for the next stack
     bottom = [q + d for q, d in zip(quality_scores, delivery_scores)]
-    ax.bar(suppliers, price_scores, width, bottom=bottom, label='Price', color='#2ca02c')
+    ax.bar(supplier_names, price_scores, width, bottom=bottom, label='Price', color='#2ca02c')
     
     # Update bottom for the final stack
     bottom = [b + p for b, p in zip(bottom, price_scores)]
-    ax.bar(suppliers, service_scores, width, bottom=bottom, label='Service', color='#d62728')
+    ax.bar(supplier_names, service_scores, width, bottom=bottom, label='Service', color='#d62728')
     
     ax.set_title('Supplier Score Components')
     ax.set_xlabel('Supplier')
@@ -431,7 +342,7 @@ def visualize_results(rankings):
                       supplier.price_score, supplier.service_score]
             values += values[:1]  # Close the loop
             
-            ax.plot(angles, values, linewidth=2, linestyle='solid', label=supplier.supplier.name, color=colors[i])
+            ax.plot(angles, values, linewidth=2, linestyle='solid', label=supplier.supplier_name, color=colors[i])
             ax.fill(angles, values, alpha=0.1, color=colors[i])
         
         plt.legend(loc='upper right', bbox_to_anchor=(0.1, 0.1))
@@ -491,7 +402,7 @@ def main():
     print("=" * 80)
     
     # Create test data
-    suppliers, products, config = setup_test_data()
+    supplier_ids, product_ids, config = setup_test_data()
     
     # Run ranking process
     rankings = run_ranking_process()

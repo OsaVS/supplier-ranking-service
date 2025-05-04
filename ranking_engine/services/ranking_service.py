@@ -7,20 +7,25 @@ and generation/storage of supplier rankings.
 
 from django.db import transaction
 from django.utils import timezone
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from api.models import (
-    Supplier,
-    SupplierRanking,
     QLearningState,
     QLearningAction,
-    QTableEntry
+    QTableEntry,
+    SupplierRanking,
+    RankingConfiguration,
+    RankingEvent,
+    SupplierPerformanceCache
 )
 
 from ranking_engine.services.metrics_service import MetricsService
 from ranking_engine.q_learning.agent import SupplierRankingAgent
 from ranking_engine.q_learning.environment import SupplierEnvironment
 from ranking_engine.q_learning.state_mapper import StateMapper
+from connectors.user_service_connector import UserServiceConnector
+from connectors.warehouse_service_connector import WarehouseServiceConnector
+from connectors.order_service_connector import OrderServiceConnector
 
 
 class RankingService:
@@ -28,6 +33,12 @@ class RankingService:
     Service for orchestrating the supplier ranking process
     using reinforcement learning and traditional metrics
     """
+    
+    def __init__(self):
+        """Initialize connections to external services"""
+        self.user_service = UserServiceConnector()
+        self.warehouse_service = WarehouseServiceConnector()
+        self.order_service = OrderServiceConnector()
     
     @staticmethod
     def get_or_create_q_learning_components():
@@ -187,10 +198,16 @@ class RankingService:
         try:
             state = QLearningState.objects.get(name=state_name)
             
+            # Get supplier name from user service
+            user_service = UserServiceConnector()
+            supplier_data = user_service.get_supplier_by_id(supplier_id)
+            supplier_name = supplier_data.get('name', f"Supplier {supplier_id}")
+            
             # Check if a ranking already exists for today
             today = date.today()
             ranking, created = SupplierRanking.objects.update_or_create(
                 supplier_id=supplier_id,
+                supplier_name=supplier_name,
                 date=today,
                 defaults={
                     'overall_score': metrics['overall_score'],
@@ -224,8 +241,17 @@ class RankingService:
         # Initialize Q-Learning components
         agent, environment, state_mapper = RankingService.initialize_q_learning()
         
+        # Create metrics service
+        metrics_service = MetricsService()
+        
         # Calculate metrics for all suppliers
-        all_metrics = MetricsService.calculate_metrics_for_all_suppliers(days)
+        all_metrics = metrics_service.calculate_metrics_for_all_suppliers(days)
+        
+        # Log ranking event
+        RankingEvent.objects.create(
+            event_type='RANKING_STARTED',
+            description=f"Starting ranking process for {len(all_metrics)} suppliers"
+        )
         
         rankings = []
         
@@ -258,15 +284,32 @@ class RankingService:
             
             rankings.append(ranking)
             
-            # Optionally apply action effects (could adjust rank for next run)
-            if action_name == 'promote' and supplier_metrics['rank'] > 1:
-                # For future iterations, this supplier might be ranked higher
+            # Log action taken
+            try:
+                state_obj = QLearningState.objects.get(name=state_name)
+                action_obj = QLearningAction.objects.get(name=action_name)
+                
+                RankingEvent.objects.create(
+                    event_type='RECOMMENDATION_MADE',
+                    description=f"Action {action_name} for supplier {supplier_id} in state {state_name}",
+                    supplier_id=supplier_id,
+                    state_id=state_obj.id,
+                    action_id=action_obj.id,
+                    reward=reward,
+                    metadata={
+                        'overall_score': supplier_metrics['overall_score'],
+                        'rank': supplier_metrics['rank']
+                    }
+                )
+            except (QLearningState.DoesNotExist, QLearningAction.DoesNotExist):
                 pass
                 
-            elif action_name == 'demote':
-                # For future iterations, this supplier might be ranked lower
-                pass
-                
+        # Log completion
+        RankingEvent.objects.create(
+            event_type='RANKING_COMPLETED',
+            description=f"Completed ranking process for {len(rankings)} suppliers"
+        )
+        
         return rankings
     
     @staticmethod
@@ -282,10 +325,7 @@ class RankingService:
         Returns:
             dict: Summary of ranking results
         """
-        # Generate baseline rankings using metrics
-        all_metrics = MetricsService.calculate_metrics_for_all_suppliers()
-        
-        # Apply Q-Learning refinement
+        # Generate rankings using metrics and Q-Learning
         rankings = RankingService.generate_supplier_rankings()
         
         # Build summary
@@ -295,11 +335,15 @@ class RankingService:
             'suppliers_ranked': len(rankings),
             'top_ranked': [],
             'bottom_ranked': [],
-            'average_score': sum(m['overall_score'] for m in all_metrics) / max(len(all_metrics), 1)
+            'average_score': 0
         }
         
-        # Get top and bottom suppliers
+        # Calculate average score
         if rankings:
+            total_score = sum(r.overall_score for r in rankings if r is not None)
+            summary['average_score'] = total_score / len(rankings)
+            
+            # Get top and bottom suppliers
             top_suppliers = SupplierRanking.objects.filter(
                 date=date.today()
             ).order_by('rank')[:5]
@@ -310,8 +354,8 @@ class RankingService:
             
             summary['top_ranked'] = [
                 {
-                    'supplier_id': r.supplier.id,
-                    'supplier_name': r.supplier.name,
+                    'supplier_id': r.supplier_id,
+                    'supplier_name': r.supplier_name,
                     'rank': r.rank,
                     'score': r.overall_score
                 }
@@ -320,8 +364,8 @@ class RankingService:
             
             summary['bottom_ranked'] = [
                 {
-                    'supplier_id': r.supplier.id,
-                    'supplier_name': r.supplier.name,
+                    'supplier_id': r.supplier_id,
+                    'supplier_name': r.supplier_name,
                     'rank': r.rank,
                     'score': r.overall_score
                 }
@@ -331,7 +375,22 @@ class RankingService:
         return summary
     
     def generate_rankings(self, ranking_date=None):
-        """For test compatibility"""
+        """
+        Generate rankings for a specific date
+        For test compatibility with either date or datetime parameter
+        
+        Args:
+            ranking_date: Date to generate rankings for, can be date or datetime
+            
+        Returns:
+            list: Generated rankings
+        """
+        # Ensure ranking_date is handled properly whether it's date or datetime
+        if ranking_date and isinstance(ranking_date, datetime):
+            ranking_date = ranking_date.date()
+            
+        # Date parameter is not used in generate_supplier_rankings, but we keep it
+        # for future implementation that might need it
         return self.generate_supplier_rankings()
 
     def update_q_values_from_transactions(self, transactions):
@@ -356,6 +415,16 @@ class RankingService:
         # First, find the state and action objects that might match the test's expectations
         high_quality_state = QLearningState.objects.filter(name__in=['excellent', 'high_quality']).first()
         increase_action = QLearningAction.objects.filter(name__in=['promote', 'increase']).first()
+        
+        # Create RankingEvent for model training
+        RankingEvent.objects.create(
+            event_type='MODEL_TRAINED',
+            description=f"Updating Q-values from {len(transactions)} transactions",
+            metadata={
+                'transaction_count': len(transactions),
+                'supplier_count': len(processed_data)
+            }
+        )
         
         # Update Q-values based on transaction data
         for supplier_id, metrics in processed_data.items():
@@ -384,6 +453,39 @@ class RankingService:
             
             structured_metrics['overall_score'] = (quality + delivery + price + service) / 4
             structured_metrics['rank'] = metrics.get('rank', 2)
+            
+            # Cache performance data for future ranking calculations
+            try:
+                # Get supplier name from user service
+                user_service = UserServiceConnector()
+                supplier_data = user_service.get_supplier_by_id(supplier_id)
+                supplier_name = supplier_data.get('name', f"Supplier {supplier_id}")
+                
+                # Update or create performance cache
+                SupplierPerformanceCache.objects.update_or_create(
+                    supplier_id=supplier_id,
+                    date=date.today(),
+                    defaults={
+                        'supplier_name': supplier_name,
+                        'quality_score': quality,
+                        'defect_rate': metrics.get('defect_rate', 5.0),
+                        'return_rate': metrics.get('return_rate', 5.0),
+                        'on_time_delivery_rate': metrics.get('on_time_delivery_rate', 90.0),
+                        'average_delay_days': metrics.get('average_delay_days', 1.0),
+                        'price_competitiveness': price,
+                        'responsiveness': metrics.get('responsiveness', 8.0),
+                        'fill_rate': metrics.get('fill_rate', 95.0),
+                        'order_accuracy': metrics.get('order_accuracy', 95.0),
+                        'data_complete': True
+                    }
+                )
+            except Exception as e:
+                # Log error but continue with Q-value updates
+                RankingEvent.objects.create(
+                    event_type='ERROR',
+                    description=f"Error caching performance data for supplier {supplier_id}: {str(e)}",
+                    supplier_id=supplier_id
+                )
             
             # Update Q-values for ALL states and actions to ensure we catch the one the test is looking for
             for state in all_states:

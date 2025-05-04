@@ -5,23 +5,27 @@ This service handles the calculation of all metrics used to evaluate
 supplier performance, which will feed into the Q-Learning ranking system.
 """
 
-from django.db.models import Avg, Count, F, Sum, Max, Min, Q, Value, ExpressionWrapper, FloatField
 from django.utils import timezone
 from datetime import date, timedelta
 import numpy as np
 
 from api.models import (
-    Supplier,
-    SupplierProduct,
-    SupplierPerformance,
-    Transaction,
-    SupplierRanking,
+    SupplierPerformanceCache,
     RankingConfiguration
 )
+from connectors.user_service_connector import UserServiceConnector
+from connectors.warehouse_service_connector import WarehouseServiceConnector
+from connectors.order_service_connector import OrderServiceConnector
 
 
 class MetricsService:
     """Service for calculating supplier performance metrics"""
+    
+    def __init__(self):
+        """Initialize connections to external services"""
+        self.user_service = UserServiceConnector()
+        self.warehouse_service = WarehouseServiceConnector()
+        self.order_service = OrderServiceConnector()
     
     @staticmethod
     def get_active_configuration():
@@ -44,8 +48,7 @@ class MetricsService:
                 is_active=True
             )
     
-    @staticmethod
-    def calculate_quality_metrics(supplier_id, days=90):
+    def calculate_quality_metrics(self, supplier_id, days=90):
         """
         Calculates quality-related metrics for a supplier
         
@@ -54,33 +57,38 @@ class MetricsService:
         """
         start_date = timezone.now() - timedelta(days=days)
         
-        transactions = Transaction.objects.filter(
+        # Get transactions from Order Service
+        transactions = self.order_service.get_supplier_transactions(
             supplier_id=supplier_id,
-            order_date__gte=start_date
+            start_date=start_date
         )
         
-        # Combine explicit performance records with transaction data
-        performance_records = SupplierPerformance.objects.filter(
+        # Get performance records from Order Service
+        performance_records = self.order_service.get_supplier_performance_records(
             supplier_id=supplier_id,
-            date__gte=start_date
+            start_date=start_date
         )
         
         # Calculate quality metrics from transactions
-        total_orders = transactions.count()
-        total_quantity = transactions.aggregate(Sum('quantity'))['quantity__sum'] or 0
-        total_defects = transactions.aggregate(Sum('defect_count'))['defect_count__sum'] or 0
+        total_orders = len(transactions)
+        total_quantity = sum(transaction.get('quantity', 0) for transaction in transactions)
+        total_defects = sum(transaction.get('defect_count', 0) for transaction in transactions)
         
         # Calculate defect rate
         defect_rate = (total_defects / total_quantity * 100) if total_quantity > 0 else 0
         
         # Calculate return rate (transactions marked as RETURNED)
-        returned_transactions = transactions.filter(status='RETURNED')
-        return_rate = (returned_transactions.count() / total_orders * 100) if total_orders > 0 else 0
+        returned_transactions = [t for t in transactions if t.get('status') == 'RETURNED']
+        return_rate = (len(returned_transactions) / total_orders * 100) if total_orders > 0 else 0
         
         # Average quality scores from performance records
-        avg_quality_score = performance_records.aggregate(Avg('quality_score'))['quality_score__avg'] or 0
-        avg_recorded_defect_rate = performance_records.aggregate(Avg('defect_rate'))['defect_rate__avg'] or 0
-        avg_recorded_return_rate = performance_records.aggregate(Avg('return_rate'))['return_rate__avg'] or 0
+        quality_scores = [record.get('quality_score', 0) for record in performance_records]
+        defect_rates = [record.get('defect_rate', 0) for record in performance_records]
+        return_rates = [record.get('return_rate', 0) for record in performance_records]
+        
+        avg_quality_score = sum(quality_scores) / len(quality_scores) if quality_scores else 0
+        avg_recorded_defect_rate = sum(defect_rates) / len(defect_rates) if defect_rates else 0
+        avg_recorded_return_rate = sum(return_rates) / len(return_rates) if return_rates else 0
         
         # Combine transaction-based metrics with recorded metrics
         # using weightings that favor recent transaction data
@@ -107,8 +115,7 @@ class MetricsService:
             'quantity_analyzed': total_quantity
         }
     
-    @staticmethod
-    def calculate_delivery_metrics(supplier_id, days=90):
+    def calculate_delivery_metrics(self, supplier_id, days=90):
         """
         Calculates delivery-related metrics for a supplier
         
@@ -117,52 +124,53 @@ class MetricsService:
         """
         start_date = timezone.now() - timedelta(days=days)
         
-        # Get completed transactions
-        completed_transactions = Transaction.objects.filter(
+        # Get completed transactions from Order Service
+        completed_transactions = self.order_service.get_supplier_transactions(
             supplier_id=supplier_id,
-            order_date__gte=start_date,
-            actual_delivery_date__isnull=False  # Only consider delivered orders
-        ).exclude(
-            status__in=['CANCELLED', 'ORDERED']  # Exclude non-completed orders
+            start_date=start_date,
+            status=['DELIVERED', 'COMPLETED'],  # Only delivered orders
+            has_delivery_date=True  # Only orders with delivery dates
         )
         
-        # Get performance records
-        performance_records = SupplierPerformance.objects.filter(
+        # Get performance records from Order Service
+        performance_records = self.order_service.get_supplier_performance_records(
             supplier_id=supplier_id,
-            date__gte=start_date
+            start_date=start_date
         )
         
         # Calculate on-time delivery rate from transactions
-        total_delivered = completed_transactions.count()
-        on_time_delivered = completed_transactions.filter(
-            actual_delivery_date__lte=F('expected_delivery_date')
-        ).count()
+        total_delivered = len(completed_transactions)
+        
+        on_time_delivered = sum(
+            1 for t in completed_transactions
+            if t.get('actual_delivery_date') and t.get('expected_delivery_date') and
+            t.get('actual_delivery_date') <= t.get('expected_delivery_date')
+        )
         
         on_time_rate = (on_time_delivered / total_delivered * 100) if total_delivered > 0 else 0
         
         # Calculate average delay in days for delayed transactions
-        delayed_transactions = completed_transactions.filter(
-            actual_delivery_date__gt=F('expected_delivery_date')
-        )
+        delayed_transactions = [
+            t for t in completed_transactions
+            if t.get('actual_delivery_date') and t.get('expected_delivery_date') and
+            t.get('actual_delivery_date') > t.get('expected_delivery_date')
+        ]
         
-        # Instead of using ExpressionWrapper directly, use the delay_days property
-        # This ensures we're working with numerical days, not timedelta objects
-        if delayed_transactions.exists():
-            total_delay_days = 0
-            for transaction in delayed_transactions:
-                total_delay_days += transaction.delay_days
-            avg_delay = total_delay_days / delayed_transactions.count()
+        if delayed_transactions:
+            total_delay_days = sum(
+                (t.get('actual_delivery_date') - t.get('expected_delivery_date')).days
+                for t in delayed_transactions
+            )
+            avg_delay = total_delay_days / len(delayed_transactions)
         else:
             avg_delay = 0
         
         # Get averages from performance records
-        avg_recorded_on_time_rate = performance_records.aggregate(
-            Avg('on_time_delivery_rate')
-        )['on_time_delivery_rate__avg'] or 0
+        on_time_rates = [record.get('on_time_delivery_rate', 0) for record in performance_records]
+        delay_days = [record.get('average_delay_days', 0) for record in performance_records]
         
-        avg_recorded_delay = performance_records.aggregate(
-            Avg('average_delay_days')
-        )['average_delay_days__avg'] or 0
+        avg_recorded_on_time_rate = sum(on_time_rates) / len(on_time_rates) if on_time_rates else 0
+        avg_recorded_delay = sum(delay_days) / len(delay_days) if delay_days else 0
         
         # Combine transaction-based metrics with recorded metrics
         combined_on_time_rate = on_time_rate * 0.7 + avg_recorded_on_time_rate * 0.3
@@ -172,10 +180,19 @@ class MetricsService:
         on_time_score = combined_on_time_rate / 10
         delay_score = max(0, 10 - min(10, combined_avg_delay * 2))
         
+        # Get supplier products from Warehouse Service
+        supplier_products = self.warehouse_service.get_supplier_products(supplier_id)
+        
         # Average lead time across products
-        avg_lead_time = SupplierProduct.objects.filter(
-            supplier_id=supplier_id
-        ).aggregate(Avg('lead_time_days'))['lead_time_days__avg'] or 0
+        lead_times = [product.get('lead_time_days', 0) for product in supplier_products]
+        avg_lead_time = sum(lead_times) / len(lead_times) if lead_times else 0
+        
+        # Get fill rate and order accuracy from performance records
+        fill_rates = [record.get('fill_rate', 90.0) for record in performance_records]
+        order_accuracies = [record.get('order_accuracy', 95.0) for record in performance_records]
+        
+        avg_fill_rate = sum(fill_rates) / len(fill_rates) if fill_rates else 90.0
+        avg_order_accuracy = sum(order_accuracies) / len(order_accuracies) if order_accuracies else 95.0
         
         # Weighted delivery score
         delivery_score = (
@@ -188,55 +205,61 @@ class MetricsService:
             'on_time_delivery_rate': combined_on_time_rate,
             'average_delay_days': combined_avg_delay,
             'average_lead_time': avg_lead_time,
+            'fill_rate': avg_fill_rate,
+            'order_accuracy': avg_order_accuracy,
             'transactions_analyzed': total_delivered
         }
     
-    @staticmethod
-    def calculate_price_metrics(supplier_id, days=90):
+    def calculate_price_metrics(self, supplier_id, days=90):
         """
         Calculates price-related metrics for a supplier
         
         Returns:
             dict: Dictionary containing price metrics
         """
-        # Get performance records
-        performance_records = SupplierPerformance.objects.filter(
+        start_date = date.today() - timedelta(days=days)
+        
+        # Get performance records from Order Service
+        performance_records = self.order_service.get_supplier_performance_records(
             supplier_id=supplier_id,
-            date__gte=date.today() - timedelta(days=days)
+            start_date=start_date
         )
         
         # Get average price competitiveness from performance records
-        avg_price_comp = performance_records.aggregate(
-            Avg('price_competitiveness')
-        )['price_competitiveness__avg'] or 5.0  # Default to average if no data
+        price_comp_scores = [record.get('price_competitiveness', 5.0) for record in performance_records]
+        avg_price_comp = sum(price_comp_scores) / len(price_comp_scores) if price_comp_scores else 5.0
         
-        # Get all supplier products
-        supplier_products = SupplierProduct.objects.filter(
-            supplier_id=supplier_id
-        )
+        # Get supplier products from Warehouse Service
+        supplier_products = self.warehouse_service.get_supplier_products(supplier_id)
+        
+        # Get all products this supplier offers
+        product_ids = [sp.get('product_id') for sp in supplier_products]
         
         # Calculate price competitiveness for each product by comparing with other suppliers
         product_price_scores = []
         
-        for sp in supplier_products:
-            # Get all suppliers for this product
-            all_supplier_prices = SupplierProduct.objects.filter(
-                product_id=sp.product_id
-            ).values_list('unit_price', flat=True)
+        for product_id in product_ids:
+            # Get this supplier's price for the product
+            current_supplier_product = next(
+                (sp for sp in supplier_products if sp.get('product_id') == product_id), 
+                None
+            )
             
-            if all_supplier_prices:
-                # Convert to list for numpy functions
-                prices_list = list(all_supplier_prices)
+            if not current_supplier_product:
+                continue
                 
+            current_price = current_supplier_product.get('unit_price')
+            
+            # Get all suppliers for this product
+            all_supplier_products = self.warehouse_service.get_product_suppliers(product_id)
+            all_prices = [sp.get('unit_price') for sp in all_supplier_products]
+            
+            if all_prices:
                 # Calculate percentile rank (lower is better for price)
-                if len(prices_list) > 1:
-                    sorted_prices = sorted(prices_list)
+                if len(all_prices) > 1:
+                    sorted_prices = sorted(all_prices)
                     
-                    # Fix: Use a more robust approach to find the closest price or position
-                    # Instead of exact matching, find the position where this price would be inserted
-                    current_price = float(sp.unit_price)
-                    
-                    # Find the position where this value would be inserted in the sorted list
+                    # Find the position where this price would be inserted
                     import bisect
                     position = bisect.bisect_left(sorted_prices, current_price)
                     
@@ -265,36 +288,36 @@ class MetricsService:
             'products_analyzed': len(product_price_scores)
         }
     
-    @staticmethod
-    def calculate_service_metrics(supplier_id, days=90):
+    def calculate_service_metrics(self, supplier_id, days=90):
         """
         Calculates service-related metrics for a supplier
         
         Returns:
             dict: Dictionary containing service metrics
         """
-        # Get performance records
-        performance_records = SupplierPerformance.objects.filter(
+        start_date = date.today() - timedelta(days=days)
+        
+        # Get performance records from Order Service
+        performance_records = self.order_service.get_supplier_performance_records(
             supplier_id=supplier_id,
-            date__gte=date.today() - timedelta(days=days)
+            start_date=start_date
         )
         
         # Get service metrics from performance records
-        avg_responsiveness = performance_records.aggregate(
-            Avg('responsiveness')
-        )['responsiveness__avg'] or 5.0
+        responsiveness_scores = [record.get('responsiveness', 5.0) for record in performance_records]
+        issue_resolution_times = [record.get('issue_resolution_time') for record in performance_records 
+                                if record.get('issue_resolution_time') is not None]
+        fill_rates = [record.get('fill_rate', 90.0) for record in performance_records]
+        order_accuracies = [record.get('order_accuracy', 95.0) for record in performance_records]
         
-        avg_issue_resolution = performance_records.aggregate(
-            Avg('issue_resolution_time')
-        )['issue_resolution_time__avg']
+        avg_responsiveness = sum(responsiveness_scores) / len(responsiveness_scores) if responsiveness_scores else 5.0
+        avg_fill_rate = sum(fill_rates) / len(fill_rates) if fill_rates else 90.0
+        avg_order_accuracy = sum(order_accuracies) / len(order_accuracies) if order_accuracies else 95.0
         
-        avg_fill_rate = performance_records.aggregate(
-            Avg('fill_rate')
-        )['fill_rate__avg'] or 90.0  # Default to 90% if no data
-        
-        avg_order_accuracy = performance_records.aggregate(
-            Avg('order_accuracy')
-        )['order_accuracy__avg'] or 95.0  # Default to 95% if no data
+        if issue_resolution_times:
+            avg_issue_resolution = sum(issue_resolution_times) / len(issue_resolution_times)
+        else:
+            avg_issue_resolution = None
         
         # Convert to 0-10 scales where needed
         fill_rate_score = avg_fill_rate / 10
@@ -323,8 +346,7 @@ class MetricsService:
             'order_accuracy': avg_order_accuracy
         }
     
-    @staticmethod
-    def calculate_combined_metrics(supplier_id, days=90):
+    def calculate_combined_metrics(self, supplier_id, days=90):
         """
         Calculates all metrics for a supplier and returns a combined result
         
@@ -332,13 +354,13 @@ class MetricsService:
             dict: Dictionary containing all metrics
         """
         # Get active configuration for weights
-        config = MetricsService.get_active_configuration()
+        config = self.get_active_configuration()
         
         # Calculate individual metric categories
-        quality_metrics = MetricsService.calculate_quality_metrics(supplier_id, days)
-        delivery_metrics = MetricsService.calculate_delivery_metrics(supplier_id, days)
-        price_metrics = MetricsService.calculate_price_metrics(supplier_id, days)
-        service_metrics = MetricsService.calculate_service_metrics(supplier_id, days)
+        quality_metrics = self.calculate_quality_metrics(supplier_id, days)
+        delivery_metrics = self.calculate_delivery_metrics(supplier_id, days)
+        price_metrics = self.calculate_price_metrics(supplier_id, days)
+        service_metrics = self.calculate_service_metrics(supplier_id, days)
         
         # Calculate overall score based on configuration weights
         overall_score = (
@@ -365,21 +387,21 @@ class MetricsService:
         
         return combined_metrics
     
-    @staticmethod
-    def calculate_metrics_for_all_suppliers(days=90):
+    def calculate_metrics_for_all_suppliers(self, days=90):
         """
         Calculates metrics for all active suppliers
         
         Returns:
             list: List of dictionaries with supplier metrics
         """
-        suppliers = Supplier.objects.filter(is_active=True)
+        # Get all active suppliers from User Service
+        suppliers = self.user_service.get_active_suppliers()
         all_metrics = []
         
         for supplier in suppliers:
-            metrics = MetricsService.calculate_combined_metrics(supplier.id, days)
-            metrics['supplier_name'] = supplier.name
-            metrics['supplier_code'] = supplier.code
+            metrics = self.calculate_combined_metrics(supplier['id'], days)
+            metrics['supplier_name'] = supplier['name']
+            metrics['supplier_code'] = supplier['code']
             all_metrics.append(metrics)
         
         # Sort by overall score

@@ -1,429 +1,374 @@
 """
-Utility functions for preprocessing supplier data for the Q-Learning algorithm.
-This module handles data normalization, feature extraction, and preparation
-of supplier performance metrics for use in the ranking system.
+Kafka utilities for the Supplier Ranking Service
+
+This module provides wrapper classes for Kafka producers and consumers
+to facilitate message-based integration with other services in the
+Intelligent and Smart Supply Chain Management System.
 """
-import pandas as pd
-import numpy as np
-from django.db.models import Avg, Count, F, Sum, Max, Min
-from django.utils import timezone
-from datetime import timedelta
-from api.models import (
-    Supplier, SupplierPerformance, Transaction, SupplierProduct,
-    QLearningState, QLearningAction, QTableEntry
-)
+
+import json
+import logging
+from typing import Dict, List, Any, Optional, Union, Callable
+from datetime import datetime, timedelta
+from confluent_kafka import Producer as ConfluentProducer
+from confluent_kafka import Consumer as ConfluentConsumer
+from confluent_kafka import KafkaException, KafkaError
+from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 
-def normalize_metric(value, min_val, max_val, reverse=False):
+class KafkaProducer:
     """
-    Normalize a metric to a value between 0 and 1.
+    Wrapper class for Kafka producer to publish messages to topics
+    """
     
-    Args:
-        value: The value to normalize
-        min_val: The minimum value in the dataset
-        max_val: The maximum value in the dataset
-        reverse: If True, smaller values are better (e.g., defect rate)
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize the Kafka producer with configuration
+
+        Args:
+            config: Optional configuration dictionary for Kafka producer
+        """
+        default_config = {
+            'bootstrap.servers': getattr(settings, 'KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092'),
+            'client.id': getattr(settings, 'KAFKA_CLIENT_ID', 'supplier-ranking-service'),
+            'acks': 'all',  # Wait for all replicas to acknowledge
+            'retries': 3,
+            'retry.backoff.ms': 500
+        }
         
-    Returns:
-        Normalized value between 0 and 1
-    """
-    if min_val == max_val:
-        return 0.5  # Default when there's no variation
-    
-    if reverse:
-        # For metrics where lower is better
-        return 1 - ((value - min_val) / (max_val - min_val)) if max_val > min_val else 0.5
-    else:
-        # For metrics where higher is better
-        return (value - min_val) / (max_val - min_val) if max_val > min_val else 0.5
+        # Merge provided config with defaults
+        if config:
+            default_config.update(config)
+            
+        try:
+            self.producer = ConfluentProducer(default_config)
+            logger.info("Kafka producer initialized")
+        except KafkaException as e:
+            logger.error(f"Failed to initialize Kafka producer: {str(e)}")
+            self.producer = None
+            
+    def produce(self, topic: str, value: Union[str, Dict], key: Optional[str] = None, 
+                headers: Optional[Dict[str, str]] = None, callback: Optional[Callable] = None):
+        """
+        Publish a message to a Kafka topic
+
+        Args:
+            topic: The Kafka topic to publish to
+            value: The message value (string or dict to be JSON serialized)
+            key: Optional message key
+            headers: Optional message headers
+            callback: Optional delivery callback function
+
+        Returns:
+            bool: True if message was sent to Kafka broker, False otherwise
+        """
+        if not self.producer:
+            logger.error("Kafka producer not initialized")
+            return False
+            
+        try:
+            # Convert dict to JSON string if necessary
+            if isinstance(value, dict):
+                value = json.dumps(value)
+                
+            # Default callback function for delivery reports
+            def delivery_report(err, msg):
+                if err is not None:
+                    logger.error(f"Message delivery failed: {err}")
+                    if callback:
+                        callback(False, err)
+                else:
+                    logger.debug(f"Message delivered to {msg.topic()} [{msg.partition()}]")
+                    if callback:
+                        callback(True, None)
+            
+            # Prepare headers in the format expected by confluent-kafka
+            kafka_headers = None
+            if headers:
+                kafka_headers = [(k, v.encode('utf-8') if isinstance(v, str) else v) 
+                                for k, v in headers.items()]
+            
+            # Produce message to topic
+            self.producer.produce(
+                topic=topic,
+                key=key.encode('utf-8') if key else None,
+                value=value.encode('utf-8'),
+                headers=kafka_headers,
+                callback=delivery_report
+            )
+            
+            # Poll producer queue to trigger callbacks
+            self.producer.poll(0)
+            return True
+            
+        except KafkaException as e:
+            logger.error(f"Error producing message to Kafka: {str(e)}")
+            if callback:
+                callback(False, str(e))
+            return False
+            
+    def flush(self, timeout: float = 10.0):
+        """
+        Wait for all messages to be delivered
+
+        Args:
+            timeout: Maximum time to block in seconds
+            
+        Returns:
+            Number of messages still in queue
+        """
+        if self.producer:
+            return self.producer.flush(timeout)
+        return 0
 
 
-def calculate_supplier_metrics(supplier_id, start_date=None, end_date=None):
+class KafkaMessage:
     """
-    Calculate comprehensive metrics for a specific supplier within a date range.
+    Class representing a message received from Kafka
+    """
     
-    Args:
-        supplier_id: ID of the supplier
-        start_date: Beginning of the date range (default: 90 days ago)
-        end_date: End of the date range (default: today)
+    def __init__(self, kafka_msg):
+        """
+        Initialize with a Kafka message
         
-    Returns:
-        Dictionary containing calculated metrics
-    """
-    if not start_date:
-        start_date = timezone.now().date() - timedelta(days=90)
-    if not end_date:
-        end_date = timezone.now().date()
+        Args:
+            kafka_msg: Original Kafka message object
+        """
+        self._kafka_msg = kafka_msg
+        self._value = None
+        self._parsed_value = None
         
-    # Get supplier
-    try:
-        supplier = Supplier.objects.get(id=supplier_id)
-    except Supplier.DoesNotExist:
+    def topic(self) -> str:
+        """Get the topic name"""
+        return self._kafka_msg.topic()
+        
+    def partition(self) -> int:
+        """Get the partition number"""
+        return self._kafka_msg.partition()
+        
+    def offset(self) -> int:
+        """Get the offset"""
+        return self._kafka_msg.offset()
+        
+    def key(self) -> Optional[str]:
+        """Get the message key as string if present"""
+        if self._kafka_msg.key() is not None:
+            return self._kafka_msg.key().decode('utf-8')
         return None
-    
-    # Get performance records in date range
-    performance_records = SupplierPerformance.objects.filter(
-        supplier_id=supplier_id,
-        date__gte=start_date,
-        date__lte=end_date
-    )
-    
-    # Get transactions in date range
-    transactions = Transaction.objects.filter(
-        supplier_id=supplier_id,
-        order_date__date__gte=start_date,
-        order_date__date__lte=end_date
-    )
-    
-    # If no data, return empty metrics
-    if not performance_records.exists() and not transactions.exists():
+        
+    def value(self) -> str:
+        """Get the message value as string"""
+        if self._value is None:
+            self._value = self._kafka_msg.value().decode('utf-8')
+        return self._value
+        
+    def json(self) -> Optional[Dict]:
+        """Get the message value as parsed JSON"""
+        if self._parsed_value is None:
+            try:
+                self._parsed_value = json.loads(self.value())
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse message value as JSON: {self.value()[:100]}...")
+                return None
+        return self._parsed_value
+        
+    def headers(self) -> Dict[str, str]:
+        """Get the message headers as a dictionary"""
+        if self._kafka_msg.headers() is None:
+            return {}
+            
         return {
-            'supplier_id': supplier_id,
-            'supplier_name': supplier.name,
-            'data_available': False,
-            'message': 'No data available for this supplier in the specified date range'
+            key: value.decode('utf-8') if isinstance(value, bytes) else value
+            for key, value in self._kafka_msg.headers()
         }
+        
+    def timestamp(self) -> tuple:
+        """Get the message timestamp information"""
+        return self._kafka_msg.timestamp()
+
+
+class KafkaConsumer:
+    """
+    Wrapper class for Kafka consumer to subscribe to topics
+    """
     
-    # Calculate average performance metrics if records exist
-    performance_metrics = {}
-    if performance_records.exists():
-        performance_agg = performance_records.aggregate(
-            avg_quality_score=Avg('quality_score'),
-            avg_defect_rate=Avg('defect_rate'),
-            avg_return_rate=Avg('return_rate'),
-            avg_on_time_delivery_rate=Avg('on_time_delivery_rate'),
-            avg_delay_days=Avg('average_delay_days'),
-            avg_price_competitiveness=Avg('price_competitiveness'),
-            avg_responsiveness=Avg('responsiveness'),
-            avg_issue_resolution_time=Avg('issue_resolution_time'),
-            avg_fill_rate=Avg('fill_rate'),
-            avg_order_accuracy=Avg('order_accuracy'),
-            avg_compliance_score=Avg('compliance_score')
-        )
-        performance_metrics = performance_agg
-    
-    # Calculate transaction-based metrics if transactions exist
-    transaction_metrics = {}
-    if transactions.exists():
-        delivered_transactions = transactions.filter(
-            status='DELIVERED',
-            actual_delivery_date__isnull=False
-        )
-        
-        # Calculate delivery metrics
-        if delivered_transactions.exists():
-            on_time_count = delivered_transactions.filter(
-                actual_delivery_date__lte=F('expected_delivery_date')
-            ).count()
+    def __init__(self, topics: Union[str, List[str]], config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize the Kafka consumer with topics and configuration
+
+        Args:
+            topics: Topic or list of topics to subscribe to
+            config: Optional configuration dictionary for Kafka consumer
+        """
+        # Convert single topic to list
+        if isinstance(topics, str):
+            topics = [topics]
             
-            total_delivered = delivered_transactions.count()
-            on_time_percentage = (on_time_count / total_delivered * 100) if total_delivered > 0 else 0
-            
-            avg_delay = delivered_transactions.filter(
-                actual_delivery_date__gt=F('expected_delivery_date')
-            ).aggregate(
-                avg_delay=Avg(F('actual_delivery_date') - F('expected_delivery_date'))
-            )['avg_delay']
-            
-            avg_delay_days = avg_delay.days if avg_delay else 0
-            
-            transaction_metrics['transaction_on_time_rate'] = on_time_percentage
-            transaction_metrics['transaction_avg_delay_days'] = avg_delay_days
-        
-        # Calculate quality metrics
-        total_quantity = transactions.aggregate(total=Sum('quantity'))['total'] or 0
-        total_defects = transactions.aggregate(total=Sum('defect_count'))['total'] or 0
-        
-        if total_quantity > 0:
-            defect_rate = (total_defects / total_quantity * 100)
-            transaction_metrics['transaction_defect_rate'] = defect_rate
-        
-        # Calculate cancellation rate
-        cancelled_count = transactions.filter(status='CANCELLED').count()
-        total_transactions = transactions.count()
-        
-        if total_transactions > 0:
-            cancellation_rate = (cancelled_count / total_transactions * 100)
-            transaction_metrics['cancellation_rate'] = cancellation_rate
-    
-    # Combine all metrics
-    result = {
-        'supplier_id': supplier_id,
-        'supplier_name': supplier.name,
-        'data_available': True,
-        'metrics_period': {
-            'start_date': start_date,
-            'end_date': end_date
+        default_config = {
+            'bootstrap.servers': getattr(settings, 'KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092'),
+            'group.id': getattr(settings, 'KAFKA_CONSUMER_GROUP', 'supplier-ranking-group'),
+            'auto.offset.reset': 'earliest',
+            'enable.auto.commit': True,
+            'auto.commit.interval.ms': 5000
         }
-    }
-    
-    # Add supplier basic info
-    result.update({
-        'credit_score': supplier.credit_score,
-        'average_lead_time': supplier.average_lead_time,
-        'supplier_size': supplier.supplier_size,
-        'is_active': supplier.is_active,
-    })
-    
-    # Add performance metrics if available
-    if performance_metrics:
-        result.update(performance_metrics)
-    
-    # Add transaction metrics if available
-    if transaction_metrics:
-        result.update(transaction_metrics)
-    
-    return result
-
-
-def extract_features_for_q_learning(supplier_id, metrics=None):
-    """
-    Extract and transform supplier metrics into features for Q-Learning.
-    
-    Args:
-        supplier_id: ID of the supplier
-        metrics: Pre-calculated metrics (optional, will be calculated if not provided)
         
-    Returns:
-        Dictionary of features suitable for Q-Learning state mapping
+        # Merge provided config with defaults
+        if config:
+            default_config.update(config)
+            
+        try:
+            self.consumer = ConfluentConsumer(default_config)
+            self.consumer.subscribe(topics)
+            logger.info(f"Kafka consumer subscribed to topics: {', '.join(topics)}")
+        except KafkaException as e:
+            logger.error(f"Failed to initialize Kafka consumer: {str(e)}")
+            self.consumer = None
+            
+    def poll(self, timeout: float = 1.0) -> Optional[KafkaMessage]:
+        """
+        Poll for new messages
+        
+        Args:
+            timeout: Maximum time to block waiting for a message
+            
+        Returns:
+            KafkaMessage if a message was received, None otherwise
+        """
+        if not self.consumer:
+            logger.error("Kafka consumer not initialized")
+            return None
+            
+        try:
+            msg = self.consumer.poll(timeout)
+            
+            if msg is None:
+                return None
+                
+            if msg.error():
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    # End of partition, not an error
+                    logger.debug(f"Reached end of partition: {msg.topic()} [{msg.partition()}]")
+                else:
+                    logger.error(f"Error polling Kafka: {msg.error()}")
+                return None
+                
+            return KafkaMessage(msg)
+            
+        except KafkaException as e:
+            logger.error(f"Exception polling Kafka: {str(e)}")
+            return None
+            
+    def consume(self, num_messages: int = 100, timeout: float = 1.0) -> List[KafkaMessage]:
+        """
+        Consume multiple messages at once
+        
+        Args:
+            num_messages: Maximum number of messages to consume
+            timeout: Maximum time to block waiting for messages
+            
+        Returns:
+            List of KafkaMessage objects
+        """
+        if not self.consumer:
+            logger.error("Kafka consumer not initialized")
+            return []
+            
+        try:
+            messages = self.consumer.consume(num_messages, timeout)
+            result = []
+            
+            for msg in messages:
+                if msg.error():
+                    if msg.error().code() != KafkaError._PARTITION_EOF:
+                        logger.error(f"Error consuming from Kafka: {msg.error()}")
+                else:
+                    result.append(KafkaMessage(msg))
+                    
+            return result
+            
+        except KafkaException as e:
+            logger.error(f"Exception consuming from Kafka: {str(e)}")
+            return []
+            
+    def commit(self, message: Optional[KafkaMessage] = None, asynchronous: bool = False):
+        """
+        Commit offsets to Kafka
+        
+        Args:
+            message: Specific message to commit, or None to commit current offsets
+            asynchronous: Whether to commit asynchronously
+            
+        Returns:
+            None
+        """
+        if not self.consumer:
+            logger.error("Kafka consumer not initialized")
+            return
+            
+        try:
+            if message:
+                self.consumer.commit(message._kafka_msg, asynchronous=asynchronous)
+            else:
+                self.consumer.commit(asynchronous=asynchronous)
+                
+        except KafkaException as e:
+            logger.error(f"Error committing offsets: {str(e)}")
+            
+    def close(self):
+        """
+        Close the consumer and commit final offsets
+        """
+        if self.consumer:
+            try:
+                self.consumer.close()
+                logger.info("Kafka consumer closed")
+            except Exception as e:
+                logger.error(f"Error closing Kafka consumer: {str(e)}")
+
+
+class KafkaAdminUtils:
     """
-    if not metrics:
-        metrics = calculate_supplier_metrics(supplier_id)
+    Utility class for Kafka administration tasks
+    """
     
-    if not metrics or not metrics.get('data_available', False):
-        return None
-    
-    # Get all suppliers for normalization context
-    all_suppliers = Supplier.objects.filter(is_active=True)
-    supplier_ids = list(all_suppliers.values_list('id', flat=True))
-    
-    # If there's only one supplier, we can't normalize properly
-    if len(supplier_ids) <= 1:
-        return {
-            'supplier_id': supplier_id,
-            'quality_score': 0.5,
-            'delivery_score': 0.5,
-            'price_score': 0.5,
-            'responsiveness_score': 0.5,
-            'risk_score': 0.5
+    @staticmethod
+    def check_connection(bootstrap_servers: Optional[str] = None) -> bool:
+        """
+        Check if Kafka connection is working
+        
+        Args:
+            bootstrap_servers: Kafka bootstrap servers, defaults to settings
+            
+        Returns:
+            bool: True if connection is working, False otherwise
+        """
+        if not bootstrap_servers:
+            bootstrap_servers = getattr(settings, 'KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+            
+        config = {
+            'bootstrap.servers': bootstrap_servers,
+            'client.id': 'supplier-ranking-connection-test'
         }
-    
-    # Get min/max values for normalization
-    # For quality metrics
-    quality_bounds = SupplierPerformance.objects.filter(
-        supplier_id__in=supplier_ids
-    ).aggregate(
-        min_quality=Min('quality_score'),
-        max_quality=Max('quality_score'),
-        min_defect=Min('defect_rate'),
-        max_defect=Max('defect_rate')
-    )
-    
-    # For delivery metrics
-    delivery_bounds = SupplierPerformance.objects.filter(
-        supplier_id__in=supplier_ids
-    ).aggregate(
-        min_otd=Min('on_time_delivery_rate'),
-        max_otd=Max('on_time_delivery_rate'),
-        min_delay=Min('average_delay_days'),
-        max_delay=Max('average_delay_days')
-    )
-    
-    # For price metrics
-    price_bounds = SupplierPerformance.objects.filter(
-        supplier_id__in=supplier_ids
-    ).aggregate(
-        min_price=Min('price_competitiveness'),
-        max_price=Max('price_competitiveness')
-    )
-    
-    # Extract and normalize features
-    features = {
-        'supplier_id': supplier_id,
-    }
-    
-    # Quality feature
-    quality_score = metrics.get('avg_quality_score', 5.0)
-    defect_rate = metrics.get('avg_defect_rate', 2.0)
-    
-    norm_quality = normalize_metric(
-        quality_score,
-        quality_bounds.get('min_quality', 0),
-        quality_bounds.get('max_quality', 10)
-    )
-    
-    norm_defect = normalize_metric(
-        defect_rate,
-        quality_bounds.get('min_defect', 0),
-        quality_bounds.get('max_defect', 100),
-        reverse=True  # Lower defect rate is better
-    )
-    
-    features['quality_score'] = (norm_quality + norm_defect) / 2
-    
-    # Delivery feature
-    on_time_rate = metrics.get('avg_on_time_delivery_rate', 50.0)
-    delay_days = metrics.get('avg_delay_days', 2.0)
-    
-    norm_otd = normalize_metric(
-        on_time_rate,
-        delivery_bounds.get('min_otd', 0),
-        delivery_bounds.get('max_otd', 100)
-    )
-    
-    norm_delay = normalize_metric(
-        delay_days,
-        delivery_bounds.get('min_delay', 0),
-        delivery_bounds.get('max_delay', 10),
-        reverse=True  # Lower delay is better
-    )
-    
-    features['delivery_score'] = (norm_otd + norm_delay) / 2
-    
-    # Price feature
-    price_comp = metrics.get('avg_price_competitiveness', 5.0)
-    
-    features['price_score'] = normalize_metric(
-        price_comp,
-        price_bounds.get('min_price', 0),
-        price_bounds.get('max_price', 10)
-    )
-    
-    # Responsiveness feature (service)
-    resp_score = metrics.get('avg_responsiveness', 5.0)
-    features['responsiveness_score'] = resp_score / 10.0  # Assuming 0-10 scale
-    
-    # Risk score (based on credit score, cancellation rate, etc.)
-    credit_score = metrics.get('credit_score', 50.0)
-    cancellation_rate = metrics.get('cancellation_rate', 5.0)
-    
-    # Normalize and combine for risk (lower is better for risk)
-    norm_credit = credit_score / 100.0 if credit_score else 0.5
-    norm_cancel = 1.0 - (cancellation_rate / 100.0) if cancellation_rate else 0.5
-    
-    features['risk_score'] = (norm_credit + norm_cancel) / 2
-    
-    return features
-
-
-def discretize_features(features, num_buckets=5):
-    """
-    Convert continuous feature values to discrete buckets for Q-Learning states.
-    
-    Args:
-        features: Dictionary of normalized features
-        num_buckets: Number of buckets to divide the feature range into
         
-    Returns:
-        Dictionary of discretized features
-    """
-    discretized = {}
-    
-    for key, value in features.items():
-        if key == 'supplier_id':
-            discretized[key] = value
-            continue
-            
-        if value is None:
-            discretized[key] = 'medium'  # Default for missing values
-            continue
-            
-        # Divide 0-1 range into buckets
-        bucket_size = 1.0 / num_buckets
-        bucket = min(int(value / bucket_size), num_buckets - 1)
-        
-        # Convert bucket to text label
-        if num_buckets == 3:
-            labels = ['low', 'medium', 'high']
-        elif num_buckets == 5:
-            labels = ['very_low', 'low', 'medium', 'high', 'very_high']
-        else:
-            labels = [str(i) for i in range(num_buckets)]
-            
-        discretized[key] = labels[bucket]
-    
-    return discretized
+        try:
+            # Create a producer to test connection
+            producer = ConfluentProducer(config)
+            producer.list_topics(timeout=5.0)
+            logger.info("Kafka connection test successful")
+            return True
+        except KafkaException as e:
+            logger.error(f"Kafka connection test failed: {str(e)}")
+            return False
 
 
-def create_state_key(discretized_features):
+def setup_kafka_logging():
     """
-    Create a state key string from discretized features for Q-Learning.
-    
-    Args:
-        discretized_features: Dictionary of discretized features
-        
-    Returns:
-        String representing the state
+    Configure logging for Kafka operations
     """
-    # Order of features in state key
-    feature_order = [
-        'quality_score', 'delivery_score', 'price_score', 
-        'responsiveness_score', 'risk_score'
-    ]
-    
-    # Create state key
-    state_parts = []
-    for feature in feature_order:
-        if feature in discretized_features:
-            state_parts.append(f"{feature}_{discretized_features[feature]}")
-    
-    return "_".join(state_parts)
-
-
-def prepare_supplier_data_for_ranking(supplier_ids=None, days=90):
-    """
-    Prepare data for all suppliers (or specified suppliers) for ranking.
-    
-    Args:
-        supplier_ids: List of supplier IDs (default: all active suppliers)
-        days: Number of days to look back for data
-        
-    Returns:
-        List of dictionaries with supplier features
-    """
-    if not supplier_ids:
-        supplier_ids = Supplier.objects.filter(is_active=True).values_list('id', flat=True)
-    
-    start_date = timezone.now().date() - timedelta(days=days)
-    end_date = timezone.now().date()
-    
-    result = []
-    for supplier_id in supplier_ids:
-        # Calculate metrics
-        metrics = calculate_supplier_metrics(supplier_id, start_date, end_date)
-        
-        if not metrics or not metrics.get('data_available', False):
-            continue
-        
-        # Extract features
-        features = extract_features_for_q_learning(supplier_id, metrics)
-        
-        if features:
-            # Add original metrics for reference
-            features['raw_metrics'] = metrics
-            result.append(features)
-    
-    return result
-
-
-def get_data_from_other_groups():
-    """
-    Placeholder for getting data from other groups.
-    This would be implemented to fetch data from Group 29, 30, and 32.
-    
-    Returns:
-        Dictionary with data from other groups
-    """
-    # This would be implemented to integrate with other groups
-    # For now, return a placeholder
-    return {
-        'group29_data': {
-            'demand_forecast': {}  # Will contain demand forecasting data
-        },
-        'group30_data': {
-            'blockchain_records': {}  # Will contain blockchain tracking data
-        },
-        'group32_data': {
-            'logistics_data': {}  # Will contain logistics optimization data
-        }
-    }
+    kafka_logger = logging.getLogger('kafka')
+    kafka_logger.setLevel(logging.WARNING)
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    kafka_logger.addHandler(handler)

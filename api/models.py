@@ -2,155 +2,6 @@ from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
 
 
-class Supplier(models.Model):
-    """Model for storing supplier information"""
-    
-    SUPPLIER_SIZE_CHOICES = (
-        ('S', 'Small'),
-        ('M', 'Medium'),
-        ('L', 'Large'),
-        ('E', 'Enterprise'),
-    )
-    
-    name = models.CharField(max_length=255)
-    code = models.CharField(max_length=50, unique=True)
-    contact_email = models.EmailField()
-    contact_phone = models.CharField(max_length=20, blank=True, null=True)
-    address = models.TextField()
-    country = models.CharField(max_length=100)
-    supplier_size = models.CharField(max_length=1, choices=SUPPLIER_SIZE_CHOICES)
-    registration_date = models.DateField(auto_now_add=True)
-    is_active = models.BooleanField(default=True)
-    description = models.TextField(blank=True, null=True)
-    
-    # Additional data
-    credit_score = models.FloatField(null=True, blank=True, 
-                                    validators=[MinValueValidator(0), MaxValueValidator(100)])
-    average_lead_time = models.IntegerField(null=True, blank=True, 
-                                           help_text="Average lead time in days")
-    
-    def __str__(self):
-        return f"{self.name} ({self.code})"
-
-
-class Product(models.Model):
-    """Model for products offered by suppliers"""
-    
-    name = models.CharField(max_length=255)
-    sku = models.CharField(max_length=50, unique=True)
-    category = models.CharField(max_length=100)
-    description = models.TextField(blank=True, null=True)
-    unit_of_measure = models.CharField(max_length=50)
-    is_active = models.BooleanField(default=True)
-    
-    def __str__(self):
-        return f"{self.name} ({self.sku})"
-
-
-class SupplierProduct(models.Model):
-    """Model for mapping products to suppliers with pricing"""
-    
-    supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='products')
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='suppliers')
-    unit_price = models.DecimalField(max_digits=10, decimal_places=2)
-    minimum_order_quantity = models.IntegerField(default=1)
-    maximum_order_quantity = models.IntegerField(null=True, blank=True)
-    lead_time_days = models.IntegerField(help_text="Lead time in days")
-    is_preferred = models.BooleanField(default=False)
-    
-    class Meta:
-        unique_together = ('supplier', 'product')
-    
-    def __str__(self):
-        return f"{self.supplier.name} - {self.product.name}"
-
-
-class SupplierPerformance(models.Model):
-    """Model for tracking supplier performance metrics"""
-    
-    supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='performance_records')
-    date = models.DateField()
-    
-    # Quality metrics
-    quality_score = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(10)])
-    defect_rate = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)])
-    return_rate = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)])
-    
-    # Delivery metrics
-    on_time_delivery_rate = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)])
-    average_delay_days = models.FloatField(default=0)
-    
-    # Price metrics
-    price_competitiveness = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(10)])
-    
-    # Service metrics
-    responsiveness = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(10)])
-    issue_resolution_time = models.FloatField(help_text="Average time to resolve issues in hours", null=True, blank=True)
-    
-    # Fulfillment metrics
-    fill_rate = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)],
-                                 help_text="Percentage of order quantities fulfilled")
-    order_accuracy = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)],
-                                     help_text="Percentage of orders with correct items")
-    
-    # Compliance metrics
-    compliance_score = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(10)], 
-                                        null=True, blank=True)
-    
-    class Meta:
-        unique_together = ('supplier', 'date')
-    
-    def __str__(self):
-        return f"{self.supplier.name} Performance on {self.date}"
-
-
-class Transaction(models.Model):
-    """Model for recording supplier transactions"""
-    
-    STATUS_CHOICES = (
-        ('ORDERED', 'Ordered'),
-        ('CONFIRMED', 'Confirmed'),
-        ('SHIPPED', 'Shipped'),
-        ('DELIVERED', 'Delivered'),
-        ('CANCELLED', 'Cancelled'),
-        ('RETURNED', 'Returned'),
-    )
-    
-    supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='transactions')
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='transactions')
-    order_date = models.DateTimeField()
-    expected_delivery_date = models.DateField()
-    actual_delivery_date = models.DateField(null=True, blank=True)
-    quantity = models.IntegerField()
-    unit_price = models.DecimalField(max_digits=10, decimal_places=2)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES)
-    blockchain_reference = models.CharField(max_length=255, null=True, blank=True, 
-                                          help_text="Reference to blockchain record from Group 30")
-    
-    # Quality information
-    defect_count = models.IntegerField(default=0)
-    rejection_reason = models.TextField(null=True, blank=True)
-    
-    def __str__(self):
-        return f"Order {self.id} - {self.supplier.name} - {self.product.name}"
-    
-    @property
-    def is_delayed(self):
-        if self.actual_delivery_date and self.expected_delivery_date:
-            return self.actual_delivery_date > self.expected_delivery_date
-        return False
-    
-    @property
-    def delay_days(self):
-        if self.is_delayed:
-            return (self.actual_delivery_date - self.expected_delivery_date).days
-        return 0
-    
-    @property
-    def total_amount(self):
-        return self.quantity * self.unit_price
-
-
 class QLearningState(models.Model):
     """Model for storing states used in Q-Learning"""
     
@@ -190,7 +41,8 @@ class QTableEntry(models.Model):
 class SupplierRanking(models.Model):
     """Model for storing supplier rankings"""
     
-    supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='rankings')
+    supplier_id = models.IntegerField(default=0, help_text="ID reference to Supplier in User Service")
+    supplier_name = models.CharField(max_length=255, default="Unknown Supplier", help_text="Cached supplier name for display purposes")
     date = models.DateField()
     overall_score = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(10)])
     quality_score = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(10)])
@@ -202,10 +54,65 @@ class SupplierRanking(models.Model):
     notes = models.TextField(blank=True, null=True)
     
     class Meta:
-        unique_together = ('supplier', 'date')
+        unique_together = ('supplier_id', 'date')
     
     def __str__(self):
-        return f"{self.supplier.name} - Rank {self.rank} on {self.date}"
+        return f"{self.supplier_name} - Rank {self.rank} on {self.date}"
+
+
+class SupplierPerformanceCache(models.Model):
+    """
+    Cached performance data from other services for use in ranking calculations
+    This prevents too many API calls during ranking calculations
+    """
+    
+    supplier_id = models.IntegerField(help_text="ID reference to Supplier in User Service")
+    supplier_name = models.CharField(max_length=255)
+    date = models.DateField()
+    
+    # Quality metrics from Order Management Service
+    quality_score = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(10)])
+    defect_rate = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)])
+    return_rate = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)])
+    
+    # Delivery metrics from Order Management Service and Blockchain Service
+    on_time_delivery_rate = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)])
+    average_delay_days = models.FloatField(default=0)
+    
+    # Price metrics from Warehouse Management Service
+    price_competitiveness = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(10)])
+    
+    # Service metrics from various services
+    responsiveness = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(10)])
+    issue_resolution_time = models.FloatField(help_text="Average time to resolve issues in hours", null=True, blank=True)
+    
+    # Fulfillment metrics from Order Management Service
+    fill_rate = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)],
+                                 help_text="Percentage of order quantities fulfilled")
+    order_accuracy = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)],
+                                     help_text="Percentage of orders with correct items")
+    
+    # Compliance metrics from User Service
+    compliance_score = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(10)], 
+                                        null=True, blank=True)
+    
+    # Data from demand forecasting (Group 29)
+    demand_forecast_accuracy = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)], 
+                                                null=True, blank=True)
+    
+    # Data from logistics (Group 32)
+    logistics_efficiency = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(10)], 
+                                           null=True, blank=True)
+    
+    # Metadata about the cache
+    last_updated = models.DateTimeField(auto_now=True)
+    data_complete = models.BooleanField(default=False)
+    
+    class Meta:
+        unique_together = ('supplier_id', 'date')
+    
+    def __str__(self):
+        return f"{self.supplier_name} Performance Cache - {self.date}"
 
 
 class RankingConfiguration(models.Model):
@@ -225,3 +132,28 @@ class RankingConfiguration(models.Model):
     
     def __str__(self):
         return self.name
+
+
+class RankingEvent(models.Model):
+    """Model for logging ranking events and decisions"""
+    
+    EVENT_TYPES = (
+        ('RANKING_STARTED', 'Ranking Process Started'),
+        ('RANKING_COMPLETED', 'Ranking Process Completed'),
+        ('MODEL_TRAINED', 'Q-Learning Model Trained'),
+        ('RECOMMENDATION_MADE', 'Supplier Recommendation Made'),
+        ('DATA_FETCHED', 'External Data Fetched'),
+        ('ERROR', 'Error Occurred'),
+    )
+    
+    event_type = models.CharField(max_length=50, choices=EVENT_TYPES)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    description = models.TextField()
+    supplier_id = models.IntegerField(null=True, blank=True)
+    state_id = models.IntegerField(null=True, blank=True)
+    action_id = models.IntegerField(null=True, blank=True)
+    reward = models.FloatField(null=True, blank=True)
+    metadata = models.JSONField(null=True, blank=True)
+    
+    def __str__(self):
+        return f"{self.event_type} - {self.timestamp}"

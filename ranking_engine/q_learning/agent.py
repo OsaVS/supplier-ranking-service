@@ -6,11 +6,15 @@ based on their performance metrics.
 """
 
 from api.models import (
-    Supplier, QLearningState, QLearningAction, QTableEntry,
+    QLearningState, QLearningAction, QTableEntry,
     SupplierRanking, RankingConfiguration
 )
 from ranking_engine.q_learning.environment import SupplierEnvironment
-from django.db.models import Max, Min
+from connectors.group29_connector import Group29Connector
+from connectors.group30_connector import Group30Connector
+from connectors.group32_connector import Group32Connector
+from ranking_engine.services.supplier_service import SupplierService
+from ranking_engine.services.metrics_service import MetricsService
 import random
 import numpy as np
 import logging
@@ -56,6 +60,13 @@ class SupplierRankingAgent:
         
         # Initialize environment
         self.environment = SupplierEnvironment(config=self.config)
+        
+        # Initialize service connectors
+        self.supplier_service = SupplierService()
+        self.metrics_service = MetricsService()
+        self.demand_forecast_connector = Group29Connector()
+        self.blockchain_connector = Group30Connector()
+        self.logistics_connector = Group32Connector()
     
     def select_action(self, state, available_actions=None, exploration=True):
         """
@@ -159,9 +170,13 @@ class SupplierRankingAgent:
             tuple: (action, reward, ranking)
         """
         try:
-            # Get supplier object
-            supplier = Supplier.objects.get(id=supplier_id)
+            # Get supplier from supplier service
+            supplier = self.supplier_service.get_supplier(supplier_id)
             
+            if not supplier:
+                logger.error(f"Supplier with ID {supplier_id} does not exist or could not be fetched")
+                return None, 0.0, None
+                
             # Get current state
             current_state = self.environment.get_state(supplier_id)
             
@@ -184,8 +199,8 @@ class SupplierRankingAgent:
             
             return selected_action, reward, ranking
             
-        except Supplier.DoesNotExist:
-            logger.error(f"Supplier with ID {supplier_id} does not exist")
+        except Exception as e:
+            logger.error(f"Error in rank_supplier for supplier ID {supplier_id}: {e}")
             return None, 0.0, None
     
     def batch_train(self, iterations=100, supplier_ids=None):
@@ -201,7 +216,8 @@ class SupplierRankingAgent:
         """
         # Get all active suppliers if supplier_ids not provided
         if supplier_ids is None:
-            supplier_ids = list(Supplier.objects.filter(is_active=True).values_list('id', flat=True))
+            # Use supplier service to get active supplier IDs
+            supplier_ids = self.supplier_service.get_active_supplier_ids()
         
         stats = {
             'iterations': iterations,
@@ -334,11 +350,13 @@ class SupplierRankingAgent:
             list: List of supplier rankings
         """
         rankings = []
-        suppliers = Supplier.objects.filter(is_active=True)
         
-        for supplier in suppliers:
+        # Use supplier service to get active supplier IDs
+        supplier_ids = self.supplier_service.get_active_supplier_ids()
+        
+        for supplier_id in supplier_ids:
             action, reward, ranking = self.rank_supplier(
-                supplier.id, update_ranking=True, exploration=exploration
+                supplier_id, update_ranking=True, exploration=exploration
             )
             if ranking:
                 rankings.append(ranking)
@@ -366,8 +384,6 @@ class SupplierRankingAgent:
         Returns:
             str: Name of the best action
         """
-        from api.models import QLearningState, QLearningAction
-        
         try:
             # Get the state object
             state = QLearningState.objects.get(name=state_name)
@@ -404,8 +420,6 @@ class SupplierRankingAgent:
             reward: Reward received for taking the action
             next_state_name: Name of the resulting state (optional)
         """
-        from api.models import QLearningState, QLearningAction, QTableEntry
-        
         try:
             # Get the state and action objects
             state = QLearningState.objects.get(name=state_name)
@@ -446,4 +460,4 @@ class SupplierRankingAgent:
             
         except (QLearningState.DoesNotExist, QLearningAction.DoesNotExist) as e:
             # Handle exceptions
-            print(f"Error updating Q-table: {e}")
+            logger.error(f"Error updating Q-table: {e}")
