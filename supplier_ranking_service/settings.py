@@ -133,12 +133,15 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Server Port
+PORT = int(os.environ.get('PORT', 8001))
+
 # Auth Service Integration
 AUTH_SERVICE_URL = os.environ.get('AUTH_SERVICE_URL', 'http://localhost:8000')
 AUTH_SERVICE_API_KEY = os.environ.get('AUTH_SERVICE_API_KEY', 'dev-api-key')
-ORDER_SERVICE_URL = "http://example.com/api/order"
-WAREHOUSE_SERVICE_URL = "http://example.com/api/warehouse"
-PRODUCT_SERVICE_URL = "http://example.com/api/product"
+ORDER_SERVICE_URL = os.environ.get('ORDER_SERVICE_URL', 'http://localhost:8002/api/order')
+WAREHOUSE_SERVICE_URL = os.environ.get('WAREHOUSE_SERVICE_URL', 'http://localhost:8003/api/warehouse')
+PRODUCT_SERVICE_URL = os.environ.get('PRODUCT_SERVICE_URL', 'http://localhost:8002/api/product')
 
 # Kafka Settings
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')

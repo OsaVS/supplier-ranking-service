@@ -161,7 +161,7 @@ class UserServiceConnector:
                     "code": "SUP-289",
                     "business_type": "Manufacturing",
                     "tax_id": "TAX10636",
-                    "compliance_score": 4.8,
+                    "compliance_score": 5,
                     "active": True,
                     "created_at": "2025-05-05T11:20:45.169505Z",
                     "updated_at": "2025-05-05T11:20:45.169505Z"
@@ -179,7 +179,7 @@ class UserServiceConnector:
                     "code": "SUP-290",
                     "business_type": "Manufacturing",
                     "tax_id": "TAX10636",
-                    "compliance_score": 5.0,
+                    "compliance_score": 3.0,
                     "active": True,
                     "created_at": "2025-05-05T11:20:45.169505Z",
                     "updated_at": "2025-05-05T11:20:45.169505Z"

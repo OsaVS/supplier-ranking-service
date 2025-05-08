@@ -187,6 +187,28 @@ class WarehouseServiceConnector:
             logger.error(f"Error fetching suppliers for product {product_id}: {str(e)}")
             return []
     
+    def get_suppliers_by_product(self, product_id):
+        """Get all supplier IDs that offer a specific product"""
+        if self.use_dummy_data:
+            # Filter supplier products by product_id and return just the supplier IDs
+            supplier_products = [sp for sp in self.dummy_supplier_products if str(sp['product_id']) == str(product_id)]
+            return [str(sp['supplier_id']) for sp in supplier_products]
+        
+        try:
+            # Convert the product ID to a string to ensure type consistency
+            product_id = str(product_id)
+            
+            response = requests.get(
+                f"{self.base_url}/api/v1/suppliers-by-product/{product_id}",
+                headers=self.headers,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching supplier IDs for product {product_id}: {str(e)}")
+            return []
+    
     def get_product(self, product_id):
         """Get details for a specific product"""
         if self.use_dummy_data:
