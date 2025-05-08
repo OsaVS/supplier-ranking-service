@@ -1,28 +1,32 @@
+"""
+Connector for the User Service that handles supplier and user data.
+"""
+
 import requests
 import logging
 import os
+import hashlib
+import random
 from django.conf import settings
+from datetime import datetime, date, timedelta
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
 class UserServiceConnector:
-    """Connector to fetch supplier data from the User Service"""
+    """Connector to fetch user and supplier data from the User Service"""
     
     def __init__(self, use_dummy_data=True):
         """Initialize connector with base URL and auth credentials from settings"""
         # Use environment variable first, then settings
         self.base_url = os.environ.get('AUTH_SERVICE_URL', 'http://localhost:8000')
         
-        # Fix URL if running in Docker but using localhost
-        if 'localhost' in self.base_url and os.environ.get('DOCKER_ENV', 'False') == 'True':
-            self.base_url = os.environ.get('AUTH_SERVICE_URL', 'http://localhost:8000')
-            
         # Get authentication credentials from settings or environment
-        self.auth_token = ''
+        self.api_key = os.environ.get('AUTH_SERVICE_API_KEY', 'dev-api-key')
         
-        # Change from Api-Key to Bearer token for authentication to match JWTAuthentication
+        # Headers for API requests
         self.headers = {
-            "Authorization": f"Bearer {self.auth_token}",
+            "Authorization": f"ApiKey {self.api_key}",
             "Content-Type": "application/json"
         }
         
@@ -32,164 +36,74 @@ class UserServiceConnector:
         # Flag to use dummy data for testing
         self.use_dummy_data = use_dummy_data
         
+        # Create dummy supplier data
+        self._create_dummy_suppliers()
+        
         logger.info(f"Initialized UserServiceConnector with base URL: {self.base_url}")
-        
-    def get_active_suppliers(self):
-        """Fetch all active suppliers from User Service"""
-        if self.use_dummy_data:
-            return [
-                {
-                    "id": 3,
-                    "user": {
-                        "id": 3,
-                        "username": "supplier",
-                        "email": "supplier@example.com",
-                        "first_name": "Supply",
-                        "last_name": "Manager",
-                        "is_active": True
-                    },
-                    "company_name": "A Supplies Inc.",
-                    "code": "SUP-288",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10635",
-                    "compliance_score": 4.8,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
-                },
-                {
-                    "id": 4,
-                    "user": {
-                        "id": 4,
-                        "username": "vendor",
-                        "email": "vendor@example.com",
-                        "first_name": "Vendor",
-                        "last_name": "Shop",
-                        "is_active": True
-                    },
-                    "company_name": "B Supplies Inc.",
-                    "code": "SUP-289",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10636",
-                    "compliance_score": 4.8,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
-                },
-                {
-                    "id": 5,
-                    "user": {
-                        "id": 5,
-                        "username": "warehouse",
-                        "email": "warehouse@example.com",
-                        "first_name": "Warehouse",
-                        "last_name": "Manager",
-                        "is_active": True
-                    },
-                    "company_name": "C Supplies Inc.",
-                    "code": "SUP-290",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10636",
-                    "compliance_score": 5.0,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
-                }
-            ]
-        
-        try:
-            response = requests.get(
-                f"{self.base_url}/api/v1/suppliers/?active=true", 
-                headers=self.headers,
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching active suppliers: {str(e)}")
-            return []
     
-    def get_active_supplier_count(self):
-        """Get the count of active suppliers"""
-        if self.use_dummy_data:
-            return 3  # Count of suppliers in our dummy data
+    def _create_dummy_suppliers(self):
+        """Create dummy supplier data for testing"""
+        # List of supplier company names
+        company_names = [
+            "Alpha Supplies Ltd", "Beta Components Inc", "Gamma Electronics Co",
+            "Delta Materials", "Epsilon Industrial", "Zeta Manufacturing",
+            "Eta Distribution", "Theta Products", "Iota Technologies",
+            "Kappa Systems", "Lambda Solutions", "Mu Logistics"
+        ]
         
-        try:
-            response = requests.get(
-                f"{self.base_url}/api/v1/suppliers/count/?active=true",
-                headers=self.headers,
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            return response.json().get('count', 0)
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching supplier count: {str(e)}")
-            return 0
+        cities = ["Colombo", "Galle", "Kandy", "Jaffna", "Negombo", "Batticaloa"]
+        business_types = ["Manufacturing", "Distribution", "Retail", "Wholesale"]
+        
+        # Generate suppliers with IDs 1-12
+        self.dummy_suppliers = {}
+        for i in range(1, 13):
+            # Use deterministic random based on supplier ID
+            random.seed(i)
             
-    def get_supplier_by_id(self, supplier_id):
-        """Fetch a specific supplier by ID"""
-        if self.use_dummy_data:
-            dummy_suppliers = {
-                3: {
-                    "user": {
-                        "id": 3,
-                        "username": "supplier",
-                        "email": "supplier@example.com",
-                        "first_name": "Supply",
-                        "last_name": "Manager",
-                        "is_active": True
-                    },
-                    "company_name": "A Supplies Inc.",
-                    "code": "SUP-288",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10635",
-                    "compliance_score": 4.8,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
+            # Create a random but consistent compliance score for this supplier
+            compliance_score = round(5.0 + random.random() * 4.0, 1)
+            
+            self.dummy_suppliers[i] = {
+                "user": {
+                    "id": i,
+                    "username": f"supplier{i}",
+                    "email": f"supplier{i}@example.com",
+                    "first_name": f"Supplier",
+                    "last_name": f"{i}",
+                    "is_active": True,
+                    "city": random.choice(cities)
                 },
-                4: {
-                    "user": {
-                        "id": 4,
-                        "username": "vendor",
-                        "email": "vendor@example.com",
-                        "first_name": "Vendor",
-                        "last_name": "Shop",
-                        "is_active": True
-                    },
-                    "company_name": "B Supplies Inc.",
-                    "code": "SUP-289",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10636",
-                    "compliance_score": 5,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
-                },
-                5: {
-                    "user": {
-                        "id": 5,
-                        "username": "warehouse",
-                        "email": "warehouse@example.com",
-                        "first_name": "Warehouse",
-                        "last_name": "Manager",
-                        "is_active": True
-                    },
-                    "company_name": "C Supplies Inc.",
-                    "code": "SUP-290",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10636",
-                    "compliance_score": 3.0,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
-                }
+                "company_name": company_names[i-1] if i <= len(company_names) else f"Supplier {i}",
+                "code": f"SUP-{i*100 + random.randint(10, 99)}",
+                "business_type": random.choice(business_types),
+                "tax_id": f"TAX{i*1000 + random.randint(100, 999)}",
+                "compliance_score": compliance_score,
+                "active": True,
+                "city": random.choice(cities),
+                "created_at": (date.today() - timedelta(days=random.randint(30, 365))).isoformat(),
+                "updated_at": (date.today() - timedelta(days=random.randint(1, 30))).isoformat()
             }
-            return dummy_suppliers.get(supplier_id, None)
+    
+    def get_supplier(self, supplier_id):
+        """
+        Get a specific supplier by ID
+        
+        Args:
+            supplier_id (int): ID of the supplier
+            
+        Returns:
+            dict: Supplier information dictionary
+        """
+        if self.use_dummy_data:
+            # Convert to int if it's a string
+            if isinstance(supplier_id, str) and supplier_id.isdigit():
+                supplier_id = int(supplier_id)
+                
+            return self.dummy_suppliers.get(supplier_id, None)
         
         try:
             response = requests.get(
-                f"{self.base_url}/api/v1/suppliers/{supplier_id}",
+                f"{self.base_url}/api/v1/suppliers/{supplier_id}/",
                 headers=self.headers,
                 timeout=self.timeout
             )
@@ -198,171 +112,21 @@ class UserServiceConnector:
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching supplier {supplier_id}: {str(e)}")
             return None
-        
-    def get_supplier_info(self, supplier_id):
-        """
-        Get detailed information about a specific supplier
-        
-        Args:
-            supplier_id (int): ID of the supplier
-            
-        Returns:
-            dict: Supplier details including compliance score
-        """
-        if self.use_dummy_data:
-            dummy_info = {
-                3: {
-                    "user": {
-                        "id": 3,
-                        "username": "supplier",
-                        "email": "supplier@example.com",
-                        "first_name": "Supply",
-                        "last_name": "Manager",
-                        "is_active": True
-                    },
-                    "company_name": "A Supplies Inc.",
-                    "code": "SUP-288",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10635",
-                    "compliance_score": 4.8,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
-                },
-                4: {
-                    "user": {
-                        "id": 4,
-                        "username": "vendor",
-                        "email": "vendor@example.com",
-                        "first_name": "Vendor",
-                        "last_name": "Shop",
-                        "is_active": True
-                    },
-                    "company_name": "B Supplies Inc.",
-                    "code": "SUP-289",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10636",
-                    "compliance_score": 4.8,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
-                },
-                5: {
-                    "user": {
-                        "id": 5,
-                        "username": "warehouse",
-                        "email": "warehouse@example.com",
-                        "first_name": "Warehouse",
-                        "last_name": "Manager",
-                        "is_active": True
-                    },
-                    "company_name": "C Supplies Inc.",
-                    "code": "SUP-290",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10636",
-                    "compliance_score": 5.0,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
-                }
-            }
-            return dummy_info.get(supplier_id, None)
-            
-        try:
-            # First try to get detailed supplier info from the dedicated endpoint
-            url = f"{self.base_url}/api/v1/suppliers/{supplier_id}/info/"
-            logger.debug(f"Making request to: {url}")
-            
-            response = requests.get(
-                url,
-                headers=self.headers,
-                timeout=self.timeout
-            )
-            
-            # If info endpoint fails, fall back to standard supplier endpoint
-            if response.status_code != 200:
-                logger.warning(f"Info endpoint failed, falling back to standard supplier endpoint for {supplier_id}")
-                return self.get_supplier_by_id(supplier_id)
-            
-            supplier_info = response.json()
-            return supplier_info
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching supplier info {supplier_id}: {str(e)}")
-            # For debugging, log more details
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response content: {e.response.text[:200]}")
-            return None
-            
+    
+    def get_supplier_by_id(self, supplier_id):
+        """Alias for get_supplier"""
+        return self.get_supplier(supplier_id)
+    
     def get_all_suppliers(self):
         """
-        Get all suppliers regardless of active status
+        Get all suppliers
         
         Returns:
             list: List of supplier dictionaries
         """
         if self.use_dummy_data:
-            # Return all suppliers from our dummy data
-            return [
-                {
-                    "id": 3,
-                    "user": {
-                        "id": 3,
-                        "username": "supplier",
-                        "email": "supplier@example.com",
-                        "first_name": "Supply",
-                        "last_name": "Manager",
-                        "is_active": True
-                    },
-                    "company_name": "A Supplies Inc.",
-                    "code": "SUP-288",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10635",
-                    "compliance_score": 4.8,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
-                },
-                {
-                    "id": 4,
-                    "user": {
-                        "id": 4,
-                        "username": "vendor",
-                        "email": "vendor@example.com",
-                        "first_name": "Vendor",
-                        "last_name": "Shop",
-                        "is_active": True
-                    },
-                    "company_name": "B Supplies Inc.",
-                    "code": "SUP-289",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10636",
-                    "compliance_score": 4.8,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
-                },
-                {
-                    "id": 5,
-                    "user": {
-                        "id": 5,
-                        "username": "warehouse",
-                        "email": "warehouse@example.com",
-                        "first_name": "Warehouse",
-                        "last_name": "Manager",
-                        "is_active": True
-                    },
-                    "company_name": "C Supplies Inc.",
-                    "code": "SUP-290",
-                    "business_type": "Manufacturing",
-                    "tax_id": "TAX10636",
-                    "compliance_score": 5.0,
-                    "active": True,
-                    "created_at": "2025-05-05T11:20:45.169505Z",
-                    "updated_at": "2025-05-05T11:20:45.169505Z"
-                }
-            ]
-            
+            return list(self.dummy_suppliers.values())
+        
         try:
             response = requests.get(
                 f"{self.base_url}/api/v1/suppliers/",
@@ -374,10 +138,62 @@ class UserServiceConnector:
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching all suppliers: {str(e)}")
             return []
+    
+    def get_active_suppliers(self):
+        """
+        Get all active suppliers
+        
+        Returns:
+            list: List of active supplier dictionaries
+        """
+        if self.use_dummy_data:
+            return [s for s in self.dummy_suppliers.values() if s.get('active', True)]
+        
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/v1/suppliers/active/",
+                headers=self.headers,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching active suppliers: {str(e)}")
+            return []
+    
+    def get_supplier_compliance_data(self, supplier_id):
+        """
+        Get compliance data for a specific supplier
+        
+        Args:
+            supplier_id (int): ID of the supplier
             
+        Returns:
+            dict: Supplier compliance data
+        """
+        if self.use_dummy_data:
+            supplier = self.get_supplier(supplier_id)
+            if not supplier:
+                return {"compliance_score": 5.0}
+                
+            # Return the compliance score
+            return {"compliance_score": supplier.get('compliance_score', 5.0)}
+            
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/v1/suppliers/{supplier_id}/compliance/",
+                headers=self.headers,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching compliance data for supplier {supplier_id}: {str(e)}")
+            return {"compliance_score": 5.0}
+    
     def test_connection(self):
         """
-        Test connection to the Auth Service
+        Test connection to the User Service
         Returns True if connection is successful, False otherwise
         """
         if self.use_dummy_data:
@@ -385,10 +201,10 @@ class UserServiceConnector:
             return True
             
         try:
-            # Try to connect to the base URL with auth headers for auth-required endpoints
+            # Try to connect to the health check endpoint
             response = requests.get(
-                f"{self.base_url}/api/v1/health-check/",
-                headers=self.headers,  # Include headers for authenticated health check
+                f"{self.base_url}/api/health-check/",
+                headers=self.headers,
                 timeout=5  # Short timeout for health check
             )
             

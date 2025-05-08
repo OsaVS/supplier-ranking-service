@@ -84,8 +84,8 @@ class WarehouseServiceConnector:
                 "product_id": 1,
                 "supplier_name": "A Supplies Inc.",
                 "product_name": "Widget A",
-                "unit_price": 9.50,
-                "lead_time_days": 5,
+                "unit_price": 1.50,
+                "lead_time_days": 2,
                 "minimum_order_quantity": 50,
                 "maximum_order_quantity": 1000,
                 "is_preferred": True
@@ -108,8 +108,8 @@ class WarehouseServiceConnector:
                 "product_name": "Widget A",
                 "unit_price": 9.80,
                 "lead_time_days": 4,
-                "minimum_order_quantity": 25,
-                "maximum_order_quantity": 800,
+                "minimum_order_quantity": 50,
+                "maximum_order_quantity": 1000,
                 "is_preferred": False
             },
             {
@@ -188,25 +188,55 @@ class WarehouseServiceConnector:
             return []
     
     def get_suppliers_by_product(self, product_id):
-        """Get all supplier IDs that offer a specific product"""
+        """
+        Get suppliers that offer a specific product
+        
+        Args:
+            product_id (int or str): ID of the product
+            
+        Returns:
+            list: List of supplier IDs
+        """
         if self.use_dummy_data:
-            # Filter supplier products by product_id and return just the supplier IDs
-            supplier_products = [sp for sp in self.dummy_supplier_products if str(sp['product_id']) == str(product_id)]
-            return [str(sp['supplier_id']) for sp in supplier_products]
+            # Make sure product_id is treated as integer
+            if isinstance(product_id, str) and product_id.isdigit():
+                product_id = int(product_id)
+            else:
+                try:
+                    product_id = int(product_id)
+                except:
+                    product_id = 1  # Default to product 1 if invalid
+                    
+            # Generate a deterministic but varied set of supplier IDs for each product
+            import hashlib
+            import random
+            
+            # Seed with product_id to get consistent results
+            random.seed(product_id)
+            
+            # Determine how many suppliers offer this product (2-5)
+            supplier_count = (product_id % 3) + 2  # 2-4 suppliers per product
+            
+            # Generate a list of potential supplier IDs (1-12)
+            all_supplier_ids = list(range(1, 13))
+            
+            # Shuffled but deterministic based on product_id
+            random.shuffle(all_supplier_ids)
+            
+            # Select the first few suppliers based on supplier_count
+            return all_supplier_ids[:supplier_count]
         
         try:
-            # Convert the product ID to a string to ensure type consistency
-            product_id = str(product_id)
-            
             response = requests.get(
-                f"{self.base_url}/api/v1/suppliers-by-product/{product_id}",
+                f"{self.base_url}/api/v1/products/{product_id}/suppliers/",
                 headers=self.headers,
                 timeout=self.timeout
             )
             response.raise_for_status()
+            # The response should be a list of supplier IDs
             return response.json()
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching supplier IDs for product {product_id}: {str(e)}")
+            logger.error(f"Error fetching suppliers for product {product_id}: {str(e)}")
             return []
     
     def get_product(self, product_id):
