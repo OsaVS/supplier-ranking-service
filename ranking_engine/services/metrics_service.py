@@ -72,19 +72,19 @@ class MetricsService:
         # Calculate quality metrics from transactions
         total_orders = len(transactions)
         total_quantity = sum(transaction.get('quantity', 0) for transaction in transactions)
-        total_defects = sum(transaction.get('defect_count', 0) for transaction in transactions)
+        total_defects = sum(transaction.get('defective_count', 0) for transaction in transactions)
         
         # Calculate defect rate
         defect_rate = (total_defects / total_quantity * 100) if total_quantity > 0 else 0
         
         # Calculate return rate (transactions marked as RETURNED)
-        returned_transactions = [t for t in transactions if t.get('status') == 'RETURNED']
+        returned_transactions = [t for t in transactions if t.get('status') == 'returned']
         return_rate = (len(returned_transactions) / total_orders * 100) if total_orders > 0 else 0
         
         # Average quality scores from performance records
         quality_scores = [record.get('quality_score', 0) for record in performance_records]
-        defect_rates = [record.get('defect_rate', 0) for record in performance_records]
-        return_rates = [record.get('return_rate', 0) for record in performance_records]
+        defect_rates = [record.get('defective_rate', 0) for record in performance_records]
+        return_rates = [record.get('returned_rate', 0) for record in performance_records]
         
         avg_quality_score = sum(quality_scores) / len(quality_scores) if quality_scores else 0
         avg_recorded_defect_rate = sum(defect_rates) / len(defect_rates) if defect_rates else 0
@@ -178,25 +178,15 @@ class MetricsService:
         
         # Get averages from performance records
         on_time_rates = [record.get('on_time_delivery_rate', 0) for record in performance_records]
-        delay_days = [record.get('average_delay_days', 0) for record in performance_records]
         
         avg_recorded_on_time_rate = sum(on_time_rates) / len(on_time_rates) if on_time_rates else 0
-        avg_recorded_delay = sum(delay_days) / len(delay_days) if delay_days else 0
         
         # Combine transaction-based metrics with recorded metrics
         combined_on_time_rate = on_time_rate * 0.7 + avg_recorded_on_time_rate * 0.3
-        combined_avg_delay = avg_delay * 0.7 + avg_recorded_delay * 0.3
         
         # Convert to a 0-10 scale score
         on_time_score = combined_on_time_rate / 10
-        delay_score = max(0, 10 - min(10, combined_avg_delay * 2))
-        
-        # Get fill rate and order accuracy from performance records
-        fill_rates = [record.get('fill_rate', 90.0) for record in performance_records]
-        order_accuracies = [record.get('order_accuracy', 95.0) for record in performance_records]
-        
-        avg_fill_rate = sum(fill_rates) / len(fill_rates) if fill_rates else 90.0
-        avg_order_accuracy = sum(order_accuracies) / len(order_accuracies) if order_accuracies else 95.0
+        delay_score = max(0, 10 - min(10, avg_delay * 2))
         
         # Weighted delivery score
         delivery_score = (
@@ -207,9 +197,7 @@ class MetricsService:
         return {
             'delivery_score': delivery_score,
             'on_time_delivery_rate': combined_on_time_rate,
-            'average_delay_days': combined_avg_delay,
-            'fill_rate': avg_fill_rate,
-            'order_accuracy': avg_order_accuracy,
+            'average_delay_days': avg_delay,
             'transactions_analyzed': total_delivered
         }
     
@@ -280,14 +268,10 @@ class MetricsService:
         calculated_price_score = (
             np.mean(product_price_scores) if product_price_scores else 5.0
         )
-        
-        # Combine calculated score with recorded competitiveness
-        price_score = calculated_price_score * 0.7 + avg_price_comp * 0.3
+
         
         return {
-            'price_score': price_score,
-            'price_competitiveness': avg_price_comp,
-            'calculated_price_competitiveness': calculated_price_score,
+            'price_score': calculated_price_score,
             'products_analyzed': len(product_price_scores)
         }
     
