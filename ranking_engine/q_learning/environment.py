@@ -361,12 +361,13 @@ class SupplierEnvironment:
                 )
             
             # Update ranking based on action
-            if action.name == "promote":
-                ranking.rank = max(0, ranking.rank - 1)
-            elif action.name == "demote":
-                ranking.rank += 1
-            elif action.name == "blacklist":
-                ranking.rank = 999  # Blacklisted suppliers have a very high rank
+            # if action.name == "promote":
+            #     ranking.rank = max(0, ranking.rank - 1)
+            # elif action.name == "demote":
+            #     ranking.rank += 1
+            # elif action.name == "blacklist":
+            #     ranking.rank = 999  # Blacklisted suppliers have a very high rank
+
 
 
             # Try to get the latest tier from previous rankings if not explicitly updated
@@ -380,7 +381,7 @@ class SupplierEnvironment:
                 if previous_ranking and previous_ranking.tier:
                     ranking.tier = previous_ranking.tier
                 else:
-                    ranking.tier = 5  # default if no previous tier exists
+                    ranking.tier = 3  # default if no previous tier exists
 
             
             # Handle the RANK_TIER actions
@@ -390,6 +391,17 @@ class SupplierEnvironment:
                     ranking.tier = tier
                 except (ValueError, IndexError):
                     logger.warning(f"Could not parse tier from action name: {action.name}")
+
+
+            # Update action_score based on action
+            action_weights = {
+                'INCREASE_ORDER_VOLUME': +1.0,
+                'DECREASE_ORDER_VOLUME': -1.0,
+                'FLAG_FOR_AUDIT': -2.0,
+                'REQUEST_QUALITY_IMPROVEMENT': -1.0,
+                'REQUEST_DELIVERY_IMPROVEMENT': -1.0,
+            }
+            action_score = action_weights.get(action.name, 0.0)
             
             # Update score based on metrics
             try:
