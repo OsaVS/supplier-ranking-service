@@ -255,26 +255,46 @@ class SupplierEnvironment:
             float: Reward value
         """
         try:
-            # Get supplier metrics
-            metrics = self.metrics_service.get_supplier_metrics(supplier_id)
-            
-            # Calculate reward based on metrics and action
-            reward = 0.0
-            
-            # Example reward calculation
-            if action.name == "promote":
-                reward = metrics.get('quality_score', 0.0) * self.config.quality_weight + \
-                         metrics.get('delivery_score', 0.0) * self.config.delivery_weight
-            elif action.name == "maintain":
-                reward = 0.0
-            elif action.name == "demote":
-                reward = -metrics.get('quality_score', 0.0) * self.config.quality_weight - \
-                         metrics.get('delivery_score', 0.0) * self.config.delivery_weight
-            elif action.name == "blacklist":
-                reward = -1.0
-            
-            return reward
-            
+            # Parse the state name (e.g., Q4_D3_P5_S2)
+            state_parts = state.name.split('_')
+            quality_level = int(state_parts[0][1])
+            delivery_level = int(state_parts[1][1])
+            price_level = int(state_parts[2][1])
+            service_level = int(state_parts[3][1])
+
+            # Calculate average level across dimensions
+            avg_level = (quality_level + delivery_level + price_level + service_level) / 4
+
+            # Initialize reward adjustment
+            adjustment = 0.0
+
+            # Adjust reward based on action name
+            if action.name.startswith('RANK_TIER'):
+                try:
+                    tier = int(action.name.split('_')[-1])
+                    tier_appropriateness = 5 - abs(tier - (6 - avg_level))  # Align tier to state level
+                    adjustment += tier_appropriateness
+                except (ValueError, IndexError):
+                    logger.warning(f"Invalid tier value in action name: {action.name}")
+
+            elif action.name == 'INCREASE_ORDER_VOLUME':
+                adjustment += 3.0 if avg_level >= 3.5 else -3.0
+
+            elif action.name == 'DECREASE_ORDER_VOLUME':
+                adjustment += 3.0 if avg_level <= 2.5 else -3.0
+
+            elif action.name == 'FLAG_FOR_AUDIT':
+                variance = np.var([quality_level, delivery_level, price_level, service_level])
+                adjustment += 2.0 if variance >= 1.5 or avg_level <= 2.0 else -1.0
+
+            elif action.name == 'REQUEST_QUALITY_IMPROVEMENT':
+                adjustment += 2.0 if quality_level <= 3 else -2.0
+
+            elif action.name == 'REQUEST_DELIVERY_IMPROVEMENT':
+                adjustment += 2.0 if delivery_level <= 3 else -2.0
+
+            return adjustment
+
         except Exception as e:
             logger.error(f"Error calculating reward for supplier {supplier_id}: {str(e)}")
             return 0.0
