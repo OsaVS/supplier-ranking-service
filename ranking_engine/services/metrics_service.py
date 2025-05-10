@@ -367,7 +367,7 @@ class MetricsService:
         
         # Get supplier info to access compliance score
         supplier_info = self.get_supplier_info(supplier_id)
-        compliance_score = supplier_info.get('compliance_score', 5.0) if supplier_info else 5.0
+        # compliance_score = supplier_info.get('compliance_score', 5.0) if supplier_info else 5.0
         
         # Calculate overall score based on configuration weights
         # Include compliance score as part of the overall evaluation
@@ -379,7 +379,7 @@ class MetricsService:
         )
         
         # Adjust overall score with compliance score (giving it 20% weight)
-        overall_score = overall_score * 0.8 + compliance_score * 0.2
+        # overall_score = overall_score * 0.8 + compliance_score * 0.2
         
         # Build combined metrics dictionary
         combined_metrics = {
@@ -389,7 +389,7 @@ class MetricsService:
             'delivery_score': delivery_metrics['delivery_score'],
             'price_score': price_metrics['price_score'],
             'service_score': service_metrics['service_score'],
-            'compliance_score': compliance_score,
+            # 'compliance_score': compliance_score,
             'quality_metrics': quality_metrics,
             'delivery_metrics': delivery_metrics,
             'price_metrics': price_metrics,
@@ -560,3 +560,5 @@ class MetricsService:
         )
         
         return metrics
+
+        

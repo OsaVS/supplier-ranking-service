@@ -16,6 +16,7 @@ from connectors.group32_connector import Group32Connector
 from ranking_engine.services.supplier_service import SupplierService
 from ranking_engine.services.metrics_service import MetricsService
 import random
+import secrets
 import numpy as np
 import logging
 
@@ -84,9 +85,11 @@ class SupplierRankingAgent:
         if available_actions is None:
             available_actions = self.environment.get_actions(state)
         
-        # Exploration: random action
-        if exploration and random.random() < self.exploration_rate:
-            return random.choice(available_actions)
+        # Exploration: random action      
+        if exploration and self.should_explore():
+            action = secrets.choice(available_actions)
+            print(f"🔀 [Exploration] Selected random action: {action.name}")
+            return action
         
         # Exploitation: best action based on Q-values
         q_values = []
@@ -352,3 +355,10 @@ class SupplierRankingAgent:
             
         # Now call learn with proper objects
         self.learn(state, action, reward, next_state)
+
+    def should_explore(self):
+        """
+        Determine whether to explore based on exploration rate using secure randomness.
+        Returns True if exploration should be triggered.
+        """
+        return secrets.randbelow(10000) < int(self.exploration_rate * 10000)
