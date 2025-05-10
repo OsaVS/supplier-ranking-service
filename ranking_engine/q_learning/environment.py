@@ -417,8 +417,6 @@ class SupplierEnvironment:
                     'overall_score': 7.0
                 }
             
-            # Get compliance score from supplier data
-            compliance_score = supplier.get('compliance_score', 5.0)
             
             # Set all individual scores
             ranking.quality_score = metrics.get('quality_score', 0.0)
@@ -434,8 +432,8 @@ class SupplierEnvironment:
                 ranking.service_score * self.config.service_weight
             )
             
-            # Add compliance score influence (20% weight)
-            ranking.overall_score = base_score * 0.8 + compliance_score * 0.2
+            # Add action score influence (20% weight)
+            ranking.overall_score = base_score * 0.9 + action_score * 0.1
             
             ranking.save()
             

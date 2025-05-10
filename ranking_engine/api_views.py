@@ -229,12 +229,13 @@ class SupplierRankingView(APIView):
                 )
 
                 tier = latest_ranking.tier if latest_ranking and latest_ranking.tier else 5
+                score = latest_ranking.overall_score if latest_ranking else score
                 
                 # Use supplier_id to create a slight variation in scores to ensure uniqueness
                 if score:
                     # Add a small variation (±0.1) based on supplier_id
                     seed = int(hashlib.md5(str(supplier_id).encode()).hexdigest(), 16) % 1000 / 1000.0
-                    variation = (seed * 2 - 1) * 0.1  # -0.1 to 0.1 range
+                    variation = (seed * 2 - 1) * 0.01  # -0.01 to 0.01 range
                     score = score + variation
                 
                 ranked_suppliers.append({
