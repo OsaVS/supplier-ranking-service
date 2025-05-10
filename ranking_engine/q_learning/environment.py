@@ -361,12 +361,28 @@ class SupplierEnvironment:
                 )
             
             # Update ranking based on action
-            if action.name == "promote":
-                ranking.rank = max(0, ranking.rank - 1)
-            elif action.name == "demote":
-                ranking.rank += 1
-            elif action.name == "blacklist":
-                ranking.rank = 999  # Blacklisted suppliers have a very high rank
+            # if action.name == "promote":
+            #     ranking.rank = max(0, ranking.rank - 1)
+            # elif action.name == "demote":
+            #     ranking.rank += 1
+            # elif action.name == "blacklist":
+            #     ranking.rank = 999  # Blacklisted suppliers have a very high rank
+
+
+
+            # Try to get the latest tier from previous rankings if not explicitly updated
+            if not action.name.startswith("RANK_TIER_"):
+                previous_ranking = (
+                    SupplierRanking.objects.filter(supplier_id=supplier_id)
+                    .exclude(date=today)
+                    .order_by('-date')
+                    .first()
+                )
+                if previous_ranking and previous_ranking.tier:
+                    ranking.tier = previous_ranking.tier
+                else:
+                    ranking.tier = 3  # default if no previous tier exists
+
             
             # Handle the RANK_TIER actions
             if action.name.startswith("RANK_TIER_"):
@@ -375,6 +391,17 @@ class SupplierEnvironment:
                     ranking.tier = tier
                 except (ValueError, IndexError):
                     logger.warning(f"Could not parse tier from action name: {action.name}")
+
+
+            # Update action_score based on action
+            action_weights = {
+                'INCREASE_ORDER_VOLUME': +1.0,
+                'DECREASE_ORDER_VOLUME': -1.0,
+                'FLAG_FOR_AUDIT': -2.0,
+                'REQUEST_QUALITY_IMPROVEMENT': -1.0,
+                'REQUEST_DELIVERY_IMPROVEMENT': -1.0,
+            }
+            action_score = action_weights.get(action.name, 0.0)
             
             # Update score based on metrics
             try:
@@ -390,8 +417,6 @@ class SupplierEnvironment:
                     'overall_score': 7.0
                 }
             
-            # Get compliance score from supplier data
-            compliance_score = supplier.get('compliance_score', 5.0)
             
             # Set all individual scores
             ranking.quality_score = metrics.get('quality_score', 0.0)
@@ -407,8 +432,8 @@ class SupplierEnvironment:
                 ranking.service_score * self.config.service_weight
             )
             
-            # Add compliance score influence (20% weight)
-            ranking.overall_score = base_score * 0.8 + compliance_score * 0.2
+            # Add action score influence (20% weight)
+            ranking.overall_score = base_score * 0.9 + action_score * 0.1
             
             ranking.save()
             

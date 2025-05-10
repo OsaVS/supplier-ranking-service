@@ -4,15 +4,18 @@ Supplier Ranking API
 This module provides API endpoints for the Q-Learning based Supplier Ranking Service.
 """
 
+from api.models import RankingEvent
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
+from datetime import date
 import logging
 import hashlib
 
-from api.models import QLearningState, QLearningAction, QTableEntry
+from api.models import QLearningState, QLearningAction, QTableEntry, SupplierRanking
 from ranking_engine.q_learning.agent import SupplierRankingAgent
 from ranking_engine.q_learning.environment import SupplierEnvironment
 from ranking_engine.q_learning.state_mapper import StateMapper
@@ -23,111 +26,112 @@ from connectors.user_service_connector import UserServiceConnector
 
 logger = logging.getLogger(__name__)
 
-
 class FeedbackView(APIView):
     """
-    Accept supplier performance feedback and update Q-values
+    Accept supplier feedback and update Q-values using the Q-learning pipeline
     """
     permission_classes = [AllowAny]
-    
+
     def post(self, request):
-        # Extract data from request
-        supplier_id = request.data.get('supplier_id')
-        product_id = request.data.get('product_id')
-        city = request.data.get('city')  # Using city instead of region
-        delivery_time_days = request.data.get('delivery_time_days')
-        quality_rating = request.data.get('quality_rating')
-        order_accuracy = request.data.get('order_accuracy')
-        issues = request.data.get('issues', 0)
-        
-        # Validate required fields
-        if not all([supplier_id, product_id, quality_rating]):
+        supplier_id = request.data.get("supplier_id")
+        product_id = request.data.get("product_id")
+        city = request.data.get("city")
+
+        # Validate input
+        if not supplier_id:
             return Response(
-                {"error": "supplier_id, product_id, and quality_rating are required fields"},
+                {"error": "supplier_id is required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Get supplier details
-        supplier_service = SupplierService()
-        supplier = supplier_service.get_supplier(supplier_id)
+        user_service = UserServiceConnector()
+        metrics_service = MetricsService()
+        supplier = user_service.get_supplier(supplier_id)
         if not supplier:
             return Response(
                 {"error": f"Supplier with ID {supplier_id} not found"},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
-        # Create metrics from feedback
-        metrics = {
-            'quality_score': min(max(float(quality_rating) * 10, 1), 10),  # Convert to 1-10 scale
-            'delivery_score': min(max(10 - min(float(delivery_time_days or 1), 10), 1), 10),  # Faster is better
-            'price_score': 7.0,  # Use default or get from another service
-            'service_score': min(max(10 - (float(issues) * 2), 1), 10),
-            'overall_score': 0.0  # Will be calculated next
-        }
-        
-        # Calculate overall score
-        metrics['overall_score'] = (
-            metrics['quality_score'] * 0.25 +
-            metrics['delivery_score'] * 0.25 +
-            metrics['price_score'] * 0.25 +
-            metrics['service_score'] * 0.25
-        )
-        
-        logger.info(f"Processing feedback for supplier {supplier_id} with metrics: {metrics}")
-        
-        # Use your existing StateMapper to get state
-        state_mapper = StateMapper()
-        state = state_mapper.get_state_from_metrics(metrics)
-        
-        # Use your environment to get reward
-        environment = SupplierEnvironment()
-        
-        # Get actions for this state
-        actions = environment.get_actions(state)
-        
-        # Use your agent to learn
-        agent = SupplierRankingAgent()
-        
-        # Find current action and update based on feedback
-        action = None
-        for a in actions:
-            if a.name.startswith("RANK_TIER_"):
-                action = a
-                break
-        
-        if not action:
-            return Response(
-                {"error": "No suitable action found for feedback"},
-                status=status.HTTP_400_BAD_REQUEST
+
+        try:
+            # === Q-Learning Pipeline ===
+            state_mapper = StateMapper()
+            environment = SupplierEnvironment()
+            agent = SupplierRankingAgent()
+
+            # Step 1: Get current state using stored supplier data
+            state = state_mapper.get_supplier_state(supplier_id)
+
+            # Step 2: Agent selects the best action (based on policy)
+            action = agent.get_best_action(state)
+
+            if action.name not in [a.name for a in environment.get_actions(state)]:
+                return Response(
+                    {"error": f"Action {action} not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+
+            # Step 3: Calculate reward
+            reward = environment.get_reward(supplier_id, state, action)
+
+            # Step 4: Get next state (based on action)
+            next_state = environment.next_state(supplier_id, action)
+
+            # Step 5: Learn and update Q-table
+            new_q_value = agent.learn(state, action, reward, next_state)
+
+            # Optional: Update ranking
+            updated_ranking = environment.update_rankings(supplier_id, action)
+
+            # Logging
+            RankingEvent.objects.create(
+                event_type='FEEDBACK_PROCESSED',
+                description=f"Q-value updated via feedback for supplier {supplier_id}",
+                supplier_id=supplier_id,
+                state_id=state.id,
+                action_id=action.id,
+                reward=reward,
+                metadata={
+                    'product_id': product_id,
+                    'city': city,
+                    'q_value': new_q_value
+                }
             )
-        
-        # Calculate reward from metrics
-        reward = environment.get_reward(supplier_id, state, action)
-        
-        # Get next state
-        next_state = environment.next_state(supplier_id, action)
-        
-        # Update Q-value
-        new_q_value = agent.learn(state, action, reward, next_state)
-        
-        # Get company name with fallback
-        company_name = supplier.get('company_name', 
-                      supplier.get('name',
-                      supplier.get('user', {}).get('name', f"Unknown Supplier {supplier_id}")))
-        
-        return Response({
-            "message": "Feedback received and Q-table updated",
-            "q_value": new_q_value,
-            "state": state.name,
-            "action": action.name,
-            "supplier": {
-                "id": supplier_id,
-                "company_name": company_name
-            },
-            "product_id": product_id,
-            "city": city,
-            "metrics": metrics
-        })
+
+            company_name = None
+            if supplier:
+                    # Fix the company_name retrieval to handle all possible formats
+                    if 'company_name' in supplier:
+                        company_name = supplier['company_name']
+                    elif 'name' in supplier:
+                        company_name = supplier['name']
+                    elif 'user' in supplier and isinstance(supplier['user'], dict):
+                        if 'name' in supplier['user']:
+                            company_name = supplier['user']['name']
+                        elif 'first_name' in supplier['user'] and 'last_name' in supplier['user']:
+                            company_name = f"{supplier['user']['first_name']} {supplier['user']['last_name']}"    
+
+            return Response({
+                "message": "Feedback processed and Q-table updated",
+                "supplier_id": supplier_id,
+                "company_name": company_name or f"Supplier {supplier_id}",  # Provide default
+                "state": state.name,
+                "action": action.name,
+                "reward": reward,
+                "new_q_value": new_q_value,
+                "product_id": product_id,
+                "city": city
+            })
+
+        except Exception as e:
+            logger.error(f"Error processing feedback: {str(e)}")
+            return Response(
+                {"error": "Failed to process feedback"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 
 class SupplierRankingView(APIView):
@@ -159,14 +163,15 @@ class SupplierRankingView(APIView):
             
             # Get metrics for each supplier
             metrics_service = MetricsService()
-            supplier_service = SupplierService()
+            user_service = UserServiceConnector()
+            state_mapper = StateMapper()
             ranked_suppliers = []
             
             logger.info(f"Getting rankings for suppliers offering product {product_id} in city {city}")
             
             for supplier_id in suppliers:
                 # Get supplier details to check city
-                supplier = supplier_service.get_supplier(supplier_id)
+                supplier = user_service.get_supplier(supplier_id)
                 
                 # Skip if supplier is not in the requested city
                 supplier_city = None
@@ -181,20 +186,21 @@ class SupplierRankingView(APIView):
                     continue
                 
                 # Calculate metrics for this supplier
-                metrics = metrics_service.calculate_combined_metrics(supplier_id)
+                metrics = metrics_service.get_supplier_metrics(supplier_id)
                 
                 # Get state for these metrics
-                state_mapper = StateMapper()
-                state = state_mapper.get_state_from_metrics(metrics)
+                state = state_mapper.get_supplier_state(supplier_id)
                 
                 # Get Q-values for this state and supplier
                 q_entries = QTableEntry.objects.filter(state=state).order_by('-q_value')
+                print(f"Q-entries found for supplier {state}: {q_entries}")
                 
                 # Get best action and its Q-value
                 best_q_value = 0.0
                 best_action = None
                 
                 if q_entries:
+                    
                     best_entry = q_entries.first()
                     best_q_value = best_entry.q_value
                     best_action = best_entry.action.name
@@ -215,26 +221,37 @@ class SupplierRankingView(APIView):
                             company_name = supplier['user']['name']
                         elif 'first_name' in supplier['user'] and 'last_name' in supplier['user']:
                             company_name = f"{supplier['user']['first_name']} {supplier['user']['last_name']}"
+
+                latest_ranking = (
+                    SupplierRanking.objects.filter(supplier_id=supplier_id)
+                    .order_by('-date')
+                    .first()
+                )
+
+                tier = latest_ranking.tier if latest_ranking and latest_ranking.tier else 5
+                score = latest_ranking.overall_score if latest_ranking else score
                 
                 # Use supplier_id to create a slight variation in scores to ensure uniqueness
                 if score:
                     # Add a small variation (±0.1) based on supplier_id
                     seed = int(hashlib.md5(str(supplier_id).encode()).hexdigest(), 16) % 1000 / 1000.0
-                    variation = (seed * 2 - 1) * 0.1  # -0.1 to 0.1 range
+                    variation = (seed * 2 - 1) * 0.01  # -0.01 to 0.01 range
                     score = score + variation
                 
                 ranked_suppliers.append({
                     "supplier_id": supplier_id,
                     "company_name": company_name or f"Supplier {supplier_id}",  # Provide default
                     "score": score,
+                    "tier": tier,
                     "state": state.name,
                     "best_action": best_action,
                     "q_value": best_q_value,
                     "city": supplier_city
                 })
             
-            # Sort by score descending
-            ranked_suppliers.sort(key=lambda x: x["score"], reverse=True)
+            # Sort by tier (ascending), then score (descending)
+            ranked_suppliers.sort(key=lambda x: (x["tier"], -x["score"]))
+
             
             return Response({
                 "product_id": product_id,
