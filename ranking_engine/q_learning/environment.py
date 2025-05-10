@@ -367,6 +367,21 @@ class SupplierEnvironment:
                 ranking.rank += 1
             elif action.name == "blacklist":
                 ranking.rank = 999  # Blacklisted suppliers have a very high rank
+
+
+            # Try to get the latest tier from previous rankings if not explicitly updated
+            if not action.name.startswith("RANK_TIER_"):
+                previous_ranking = (
+                    SupplierRanking.objects.filter(supplier_id=supplier_id)
+                    .exclude(date=today)
+                    .order_by('-date')
+                    .first()
+                )
+                if previous_ranking and previous_ranking.tier:
+                    ranking.tier = previous_ranking.tier
+                else:
+                    ranking.tier = 5  # default if no previous tier exists
+
             
             # Handle the RANK_TIER actions
             if action.name.startswith("RANK_TIER_"):

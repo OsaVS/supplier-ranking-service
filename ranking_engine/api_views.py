@@ -11,10 +11,11 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
+from datetime import date
 import logging
 import hashlib
 
-from api.models import QLearningState, QLearningAction, QTableEntry
+from api.models import QLearningState, QLearningAction, QTableEntry, SupplierRanking
 from ranking_engine.q_learning.agent import SupplierRankingAgent
 from ranking_engine.q_learning.environment import SupplierEnvironment
 from ranking_engine.q_learning.state_mapper import StateMapper
@@ -163,6 +164,7 @@ class SupplierRankingView(APIView):
             # Get metrics for each supplier
             metrics_service = MetricsService()
             user_service = UserServiceConnector()
+            state_mapper = StateMapper()
             ranked_suppliers = []
             
             logger.info(f"Getting rankings for suppliers offering product {product_id} in city {city}")
@@ -187,7 +189,6 @@ class SupplierRankingView(APIView):
                 metrics = metrics_service.get_supplier_metrics(supplier_id)
                 
                 # Get state for these metrics
-                state_mapper = StateMapper()
                 state = state_mapper.get_supplier_state(supplier_id)
                 
                 # Get Q-values for this state and supplier
@@ -220,6 +221,14 @@ class SupplierRankingView(APIView):
                             company_name = supplier['user']['name']
                         elif 'first_name' in supplier['user'] and 'last_name' in supplier['user']:
                             company_name = f"{supplier['user']['first_name']} {supplier['user']['last_name']}"
+
+                latest_ranking = (
+                    SupplierRanking.objects.filter(supplier_id=supplier_id)
+                    .order_by('-date')
+                    .first()
+                )
+
+                tier = latest_ranking.tier if latest_ranking and latest_ranking.tier else 5
                 
                 # Use supplier_id to create a slight variation in scores to ensure uniqueness
                 if score:
@@ -232,14 +241,16 @@ class SupplierRankingView(APIView):
                     "supplier_id": supplier_id,
                     "company_name": company_name or f"Supplier {supplier_id}",  # Provide default
                     "score": score,
+                    "tier": tier,
                     "state": state.name,
                     "best_action": best_action,
                     "q_value": best_q_value,
                     "city": supplier_city
                 })
             
-            # Sort by score descending
-            ranked_suppliers.sort(key=lambda x: x["score"], reverse=True)
+            # Sort by tier (ascending), then score (descending)
+            ranked_suppliers.sort(key=lambda x: (x["tier"], -x["score"]))
+
             
             return Response({
                 "product_id": product_id,
