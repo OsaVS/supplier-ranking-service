@@ -25,114 +25,6 @@ from connectors.user_service_connector import UserServiceConnector
 
 logger = logging.getLogger(__name__)
 
-
-# class FeedbackView(APIView):
-#     """
-#     Accept supplier performance feedback and update Q-values
-#     """
-#     permission_classes = [AllowAny]
-    
-#     def post(self, request):
-#         # Extract data from request
-#         supplier_id = request.data.get('supplier_id')
-#         product_id = request.data.get('product_id')
-#         city = request.data.get('city')  # Using city instead of region
-#         delivery_time_days = request.data.get('delivery_time_days')
-#         quality_rating = request.data.get('quality_rating')
-#         order_accuracy = request.data.get('order_accuracy')
-#         issues = request.data.get('issues', 0)
-        
-#         # Validate required fields
-#         if not all([supplier_id, product_id, quality_rating]):
-#             return Response(
-#                 {"error": "supplier_id, product_id, and quality_rating are required fields"},
-#                 status=status.HTTP_400_BAD_REQUEST
-#             )
-        
-#         # Get supplier details
-#         supplier_service = SupplierService()
-#         supplier = supplier_service.get_supplier(supplier_id)
-#         if not supplier:
-#             return Response(
-#                 {"error": f"Supplier with ID {supplier_id} not found"},
-#                 status=status.HTTP_404_NOT_FOUND
-#             )
-        
-#         # Create metrics from feedback
-#         metrics = {
-#             'quality_score': min(max(float(quality_rating) * 10, 1), 10),  # Convert to 1-10 scale
-#             'delivery_score': min(max(10 - min(float(delivery_time_days or 1), 10), 1), 10),  # Faster is better
-#             'price_score': 7.0,  # Use default or get from another service
-#             'service_score': min(max(10 - (float(issues) * 2), 1), 10),
-#             'overall_score': 0.0  # Will be calculated next
-#         }
-        
-#         # Calculate overall score
-#         metrics['overall_score'] = (
-#             metrics['quality_score'] * 0.25 +
-#             metrics['delivery_score'] * 0.25 +
-#             metrics['price_score'] * 0.25 +
-#             metrics['service_score'] * 0.25
-#         )
-        
-#         logger.info(f"Processing feedback for supplier {supplier_id} with metrics: {metrics}")
-        
-#         # Use your existing StateMapper to get state
-#         state_mapper = StateMapper()
-#         state = state_mapper.get_state_from_metrics(metrics)
-        
-#         # Use your environment to get reward
-#         environment = SupplierEnvironment()
-        
-#         # Get actions for this state
-#         actions = environment.get_actions(state)
-        
-#         # Use your agent to learn
-#         agent = SupplierRankingAgent()
-        
-#         # Find current action and update based on feedback
-#         action = None
-#         for a in actions:
-#             if a.name.startswith("RANK_TIER_"):
-#                 action = a
-#                 break
-        
-#         if not action:
-#             return Response(
-#                 {"error": "No suitable action found for feedback"},
-#                 status=status.HTTP_400_BAD_REQUEST
-#             )
-        
-#         # Calculate reward from metrics
-#         reward = environment.get_reward(supplier_id, state, action)
-        
-#         # Get next state
-#         next_state = environment.next_state(supplier_id, action)
-        
-#         # Update Q-value
-#         new_q_value = agent.learn(state, action, reward, next_state)
-        
-#         # Get company name with fallback
-#         company_name = supplier.get('company_name', 
-#                       supplier.get('name',
-#                       supplier.get('user', {}).get('name', f"Unknown Supplier {supplier_id}")))
-        
-#         return Response({
-#             "message": "Feedback received and Q-table updated",
-#             "q_value": new_q_value,
-#             "state": state.name,
-#             "action": action.name,
-#             "supplier": {
-#                 "id": supplier_id,
-#                 "company_name": company_name
-#             },
-#             "product_id": product_id,
-#             "city": city,
-#             "metrics": metrics
-#         })
-
-
-
 class FeedbackView(APIView):
     """
     Accept supplier feedback and update Q-values using the Q-learning pipeline
@@ -168,10 +60,7 @@ class FeedbackView(APIView):
             agent = SupplierRankingAgent()
 
             # Step 1: Get current state using stored supplier data
-            metrics = metrics_service.get_supplier_metrics(supplier_id)
-            state = state_mapper.get_state_from_metrics(metrics)
-            #state = state_mapper.get_supplier_state(supplier_id)
-            print(f"###################{supplier_id} state: {state}")
+            state = state_mapper.get_supplier_state(supplier_id)
 
             # Step 2: Agent selects the best action (based on policy)
             action = agent.get_best_action(state)
@@ -296,12 +185,10 @@ class SupplierRankingView(APIView):
                 
                 # Calculate metrics for this supplier
                 metrics = metrics_service.get_supplier_metrics(supplier_id)
-                print(f"$$$$$$$$$$$$$$$$$$$$$$$$$$$$$Metrics for supplier {supplier_id}: {metrics}")
                 
                 # Get state for these metrics
                 state_mapper = StateMapper()
                 state = state_mapper.get_supplier_state(supplier_id)
-                print(f"##############################State for supplier {supplier_id}: {state}")
                 
                 # Get Q-values for this state and supplier
                 q_entries = QTableEntry.objects.filter(state=state).order_by('-q_value')
