@@ -218,7 +218,7 @@ class MetricsService:
         
         # Get average price competitiveness from performance records
         price_comp_scores = [record.get('price_competitiveness', 5.0) for record in performance_records]
-        avg_price_comp = sum(price_comp_scores) / len(price_comp_scores) if price_comp_scores else 5.0
+        # avg_price_comp = sum(price_comp_scores) / len(price_comp_scores) if price_comp_scores else 5.0
         
         # Get supplier products from Warehouse Service
         supplier_products = self.warehouse_service.get_supplier_products(supplier_id)
@@ -282,21 +282,33 @@ class MetricsService:
         Returns:
             dict: Dictionary containing service metrics
         """
-        responsiveness = 8.0  # On a scale of 0-10
-        fill_rate = 95.0      # Percentage
-        order_accuracy = 98.0 # Percentage
+
+        start_date = date.today() - timedelta(days=days)
+        
+        # Get performance records from Order Service
+        performance_records = self.order_service.get_supplier_performance_records(
+            supplier_id=supplier_id,
+            start_date=start_date
+        )
+        
+        # Get service metrics from performance records
+        responsiveness_score = [record.get('avg_responsiveness', 5.0) for record in performance_records]
+        fill_rate = [record.get('fill_rate', 0.9) for record in performance_records]
+        order_accuracy = [record.get('order_accuracy_rate', 0.9) for record in performance_records]
+
         issue_resolution_time = 24.0  # Hours
+        # scale resopnsiveness to 0-10
         
         # Convert to 0-10 scales where needed
-        fill_rate_score = fill_rate / 10
-        order_accuracy_score = order_accuracy / 10
+        fill_rate_score = (sum(fill_rate) / len(fill_rate) if fill_rate else 0.9) * 10
+        order_accuracy_score = (sum(order_accuracy) / len(order_accuracy) if order_accuracy else 0.9) * 10
         
         # Convert issue resolution time to a score (lower is better)
         issue_resolution_score = max(0, 10 - (issue_resolution_time / 7.2))
         
         # Weighted service score
         service_score = (
-            responsiveness * 0.3 +
+            responsiveness_score * 0.3 +
             issue_resolution_score * 0.2 +
             fill_rate_score * 0.25 +
             order_accuracy_score * 0.25
@@ -304,7 +316,7 @@ class MetricsService:
         
         return {
             'service_score': service_score,
-            'responsiveness': responsiveness,
+            'responsiveness': responsiveness_score,
             'issue_resolution_time': issue_resolution_score,
             'fill_rate': fill_rate,
             'order_accuracy': order_accuracy_score
