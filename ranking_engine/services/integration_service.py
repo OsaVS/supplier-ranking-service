@@ -324,16 +324,33 @@ class IntegrationService:
         
         # Get active suppliers from User Service
         try:
+            # Try active endpoint first
             response = requests.get(
                 f"{IntegrationService.USER_SERVICE_API}suppliers/active/",
                 timeout=10
             )
             
+            # If 404, try fallback to main suppliers with query param
+            if response.status_code == 404:
+                response = requests.get(
+                    f"{IntegrationService.USER_SERVICE_API}suppliers/",
+                    params={"active": "true"},
+                    timeout=10
+                )
+            
             if response.status_code != 200:
                 updates['errors'].append(f"Failed to fetch active suppliers: {response.status_code}")
                 return updates
                 
-            suppliers = response.json().get('suppliers', [])
+            # Handle different response formats
+            suppliers_data = response.json()
+            if isinstance(suppliers_data, dict) and 'suppliers' in suppliers_data:
+                suppliers = suppliers_data['suppliers']
+            elif isinstance(suppliers_data, list):
+                suppliers = suppliers_data
+            else:
+                suppliers = suppliers_data.get('suppliers', [])
+                
             today = timezone.now().date()
             
             for supplier in suppliers:

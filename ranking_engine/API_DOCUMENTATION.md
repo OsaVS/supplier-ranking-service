@@ -233,6 +233,110 @@ All API endpoints are accessible under the following base path:
 }
 ```
 
+### 6. Update Supplier Rankings
+
+**Endpoint:** `POST /api/ranking/rankings/update/`
+
+**Purpose:** Explicitly calculate and store rankings for suppliers in the database. This endpoint can be used to update all supplier rankings or a specific supplier's ranking.
+
+**Permission:** Authenticated users
+
+**Request Body:**
+
+```json
+{
+  "supplier_id": "123"  // Optional - if not provided, updates all active suppliers
+}
+```
+
+**Response (For a single supplier):**
+
+```json
+{
+  "message": "Ranking updated for supplier 123",
+  "supplier_id": 123,
+  "rank": 3,
+  "tier": 2,
+  "overall_score": 8.2,
+  "date": "2025-05-17"
+}
+```
+
+**Response (For all suppliers):**
+
+```json
+{
+  "message": "Updated rankings for 15 suppliers",
+  "suppliers": [
+    {
+      "supplier_id": 123,
+      "rank": 3,
+      "tier": 2,
+      "overall_score": 8.2
+    },
+    {
+      "supplier_id": 456,
+      "rank": 1,
+      "tier": 1,
+      "overall_score": 9.5
+    }
+    // Additional suppliers...
+  ],
+  "date": "2025-05-17"
+}
+```
+
+**Endpoint:** `GET /api/ranking/rankings/update/`
+
+**Purpose:** Retrieve the most recent rankings for all suppliers or a specific supplier.
+
+**Query Parameters:**
+- `supplier_id` (optional): ID of a specific supplier to get ranking for
+
+**Response (For a single supplier):**
+
+```json
+{
+  "supplier_id": 123,
+  "supplier_name": "Alpha Supplier",
+  "rank": 3,
+  "tier": 2,
+  "overall_score": 8.2,
+  "quality_score": 7.5,
+  "delivery_score": 8.0,
+  "price_score": 9.0,
+  "service_score": 8.5,
+  "date": "2025-05-17"
+}
+```
+
+**Response (For all suppliers):**
+
+```json
+{
+  "rankings": [
+    {
+      "supplier_id": 456,
+      "supplier_name": "Beta Supplier",
+      "rank": 1,
+      "tier": 1,
+      "overall_score": 9.5,
+      "date": "2025-05-17"
+    },
+    {
+      "supplier_id": 789,
+      "supplier_name": "Gamma Supplier",
+      "rank": 2,
+      "tier": 1,
+      "overall_score": 9.1,
+      "date": "2025-05-17"
+    }
+    // Additional suppliers...
+  ],
+  "count": 15
+}
+```
+
 ## State Format
 
 The system uses a state format of `Q{quality_level}_D{delivery_level}_P{price_level}_S{service_level}` where each level is a value between 1-5 representing the performance level in that dimension.

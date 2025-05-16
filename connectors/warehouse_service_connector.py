@@ -21,8 +21,8 @@ _GLOBAL_CACHE_STATS = {
 class WarehouseServiceConnector:
     """Connector to fetch warehouse and product data from the Warehouse Service"""
     
-    # Set a reasonable cache timeout (1 hour)
-    CACHE_TIMEOUT = 3600  # seconds
+    # Increase cache timeout from 1 hour to 24 hours (86400 seconds)
+    CACHE_TIMEOUT = 86400  # seconds
     
     def __init__(self, use_dummy_data=False):
         """Initialize connector with base URL and auth credentials from settings"""
@@ -265,20 +265,18 @@ class WarehouseServiceConnector:
             products = []
             
             for product in data.get("products", []):
-                # Get product details from cache if possible to avoid additional API calls
-                product_detail = self.get_product(product["product_id"])
-                if product_detail:
-                    products.append({
-                        "supplier_id": data["supplier_id"],
-                        "product_id": product["product_id"],
-                        "supplier_name": "Unknown",  # Not provided by API
-                        "product_name": product_detail.get("product_name", "Unknown"),
-                        "unit_price": product["supplier_price"],
-                        "lead_time_days": 0,  # Not provided by API
-                        "minimum_order_quantity": 0,  # Not provided by API
-                        "maximum_order_quantity": 0,  # Not provided by API
-                        "is_preferred": False  # Not provided by API
-                    })
+                # Use product data directly without making additional API calls
+                products.append({
+                    "supplier_id": data["supplier_id"],
+                    "product_id": product["product_id"],
+                    "supplier_name": data.get("supplier_name", "Unknown"),
+                    "product_name": product.get("product_name", f"Product {product['product_id']}"),
+                    "unit_price": product["supplier_price"],
+                    "lead_time_days": product.get("lead_time_days", 0),
+                    "minimum_order_quantity": product.get("minimum_order_quantity", 0),
+                    "maximum_order_quantity": product.get("maximum_order_quantity", 0),
+                    "is_preferred": product.get("is_preferred", False)
+                })
             
             # Cache the result
             self._set_in_cache(cache_key, products)
@@ -441,12 +439,15 @@ class WarehouseServiceConnector:
             return product
             
         try:
+            # Use a shorter timeout for product requests since they should be quick
+            timeout = min(5, self.timeout)  
+            
             logger.info(f"API call: get_product for product_id={product_id}")
             # Get product details
             response = requests.get(
                 f"{self.base_url}/api/product/products/{product_id}/",
                 headers=self.headers,
-                timeout=self.timeout
+                timeout=timeout
             )
             response.raise_for_status()
             
@@ -542,3 +543,280 @@ class WarehouseServiceConnector:
         except requests.exceptions.RequestException as e:
             logger.error(f"Connection test failed: {str(e)}")
             return False
+    
+    def get_suppliers_products_batch(self, supplier_ids):
+        """Get products for multiple suppliers in a single method call to reduce individual API calls
+        
+        Args:
+            supplier_ids (list): List of supplier IDs
+            
+        Returns:
+            dict: Dictionary mapping supplier_id to their products list
+        """
+        if not supplier_ids:
+            return {}
+            
+        # Check if we're using dummy data
+        if self.use_dummy_data:
+            # For dummy data, we can just call individual methods
+            result = {}
+            for supplier_id in supplier_ids:
+                result[supplier_id] = self.get_supplier_products(supplier_id)
+            return result
+        
+        # First check cache for all suppliers
+        result = {}
+        missing_suppliers = []
+        
+        for supplier_id in supplier_ids:
+            cache_key = f"supplier_products_{supplier_id}"
+            cached_data = self._get_from_cache(cache_key)
+            if cached_data:
+                result[supplier_id] = cached_data
+            else:
+                missing_suppliers.append(supplier_id)
+        
+        # If all suppliers were in cache, return immediately
+        if not missing_suppliers:
+            return result
+        
+        # For remaining suppliers, use parallel API calls for better performance
+        try:
+            # Import the utility in the method to avoid circular imports
+            from connectors.utils import parallel_execution
+            
+            # Create a worker function that processes one supplier
+            def get_supplier_products_worker(supplier_id):
+                return self.get_supplier_products(supplier_id)
+            
+            # Execute in parallel with reasonable limits
+            max_parallel = min(5, len(missing_suppliers))
+            missing_results = parallel_execution(
+                items=missing_suppliers,
+                worker_func=get_supplier_products_worker,
+                max_workers=max_parallel,
+                timeout=20,
+                description="suppliers"
+            )
+            
+            # Add the results to our return dictionary
+            result.update(missing_results)
+            
+        except ImportError:
+            # If utils module not available, fall back to sequential execution
+            logger.warning("Parallel execution utilities not available, using sequential execution")
+            for supplier_id in missing_suppliers:
+                result[supplier_id] = self.get_supplier_products(supplier_id)
+        except Exception as e:
+            logger.error(f"Error in parallel supplier products fetch: {str(e)}")
+            # If parallel execution fails, fall back to sequential execution
+            for supplier_id in missing_suppliers:
+                if supplier_id not in result:
+                    result[supplier_id] = self.get_supplier_products(supplier_id)
+                    
+        return result
+    
+    def get_products_batch(self, product_ids):
+        """
+        Get details for multiple products in a single method call
+        
+        Args:
+            product_ids (list): List of product IDs
+            
+        Returns:
+            dict: Dictionary mapping product_id to product details
+        """
+        if not product_ids:
+            return {}
+            
+        result = {}
+        
+        # Check if we're using dummy data
+        if self.use_dummy_data:
+            for product_id in product_ids:
+                result[product_id] = self.get_product(product_id)
+            return result
+            
+        # First check cache for all products
+        missing_products = []
+        for product_id in product_ids:
+            cache_key = f"product_{product_id}"
+            cached_data = self._get_from_cache(cache_key)
+            if cached_data:
+                result[product_id] = cached_data
+            else:
+                missing_products.append(product_id)
+                
+        # If all products were in cache, return immediately
+        if not missing_products:
+            return result
+            
+        # For remaining products, try to use batch endpoint first
+        try:
+            # Use a shorter timeout for product batch requests
+            timeout = min(8, self.timeout)
+            
+            # If there's a batch endpoint, use it
+            if len(missing_products) > 1:
+                logger.info(f"API call: get_products_batch for {len(missing_products)} products")
+                try:
+                    # Try to use batch endpoint if it exists
+                    response = requests.get(
+                        f"{self.base_url}/api/product/products/batch/",
+                        params={"ids": ",".join(str(pid) for pid in missing_products)},
+                        headers=self.headers,
+                        timeout=timeout
+                    )
+                    if response.status_code == 200:
+                        products_data = response.json()
+                        for product in products_data:
+                            product_id = product.get("id")
+                            if product_id:
+                                # Cache individual products
+                                self._set_in_cache(f"product_{product_id}", product)
+                                result[product_id] = product
+                        
+                        # Check if all products were retrieved
+                        still_missing = [pid for pid in missing_products if pid not in result]
+                        if not still_missing:
+                            return result
+                        
+                        # Update missing_products list with those still missing
+                        missing_products = still_missing
+                except Exception as e:
+                    # If batch endpoint doesn't exist or fails, continue to parallel fetching
+                    logger.warning(f"Batch product fetch failed, falling back to parallel: {str(e)}")
+            
+            # For remaining products, use parallel execution
+            try:
+                # Import utility here to avoid circular imports
+                from connectors.utils import parallel_execution
+                
+                # Define worker function
+                def get_product_worker(product_id):
+                    return self.get_product(product_id)
+                
+                # Use parallel execution with reasonable limits
+                max_parallel = min(8, len(missing_products))
+                missing_results = parallel_execution(
+                    items=missing_products,
+                    worker_func=get_product_worker,
+                    max_workers=max_parallel,
+                    timeout=15,
+                    description="products"
+                )
+                
+                # Add results
+                result.update(missing_results)
+                
+            except ImportError:
+                # If utils not available, use sequential
+                logger.warning("Parallel execution utilities not available, using sequential execution")
+                for product_id in missing_products:
+                    product_data = self.get_product(product_id)
+                    if product_data:
+                        result[product_id] = product_data
+            except Exception as e:
+                logger.error(f"Error in parallel product fetch: {str(e)}")
+                # Fall back to sequential if parallel fails
+                for product_id in missing_products:
+                    if product_id not in result:
+                        product_data = self.get_product(product_id)
+                        if product_data:
+                            result[product_id] = product_data
+                    
+        except Exception as e:
+            logger.error(f"Error in batch product fetch: {str(e)}")
+            # Attempt sequential fetch as a last resort
+            for product_id in missing_products:
+                if product_id not in result:
+                    product_data = self.get_product(product_id)
+                    if product_data:
+                        result[product_id] = product_data
+            
+        return result
+    
+    def pre_warm_cache(self, max_suppliers=50, max_products=100):
+        """
+        Pre-warm the cache with commonly accessed data to improve response times
+        
+        Args:
+            max_suppliers (int): Maximum number of suppliers to pre-cache
+            max_products (int): Maximum number of products to pre-cache
+            
+        Returns:
+            dict: Cache statistics after pre-warming
+        """
+        logger.info(f"Pre-warming cache with up to {max_suppliers} suppliers and {max_products} products")
+        
+        # We'll use dummy data if that setting is enabled
+        if self.use_dummy_data:
+            logger.info("Using dummy data for cache pre-warming")
+            # Warm dummy suppliers
+            for i in range(1, max_suppliers + 1):
+                self.get_supplier_products(i)
+                
+            # Warm dummy products
+            for i in range(1, max_products + 1):
+                self.get_product(i)
+                
+            return self.get_cache_stats()
+        
+        try:
+            # Get list of active suppliers (limit by max_suppliers)
+            try:
+                response = requests.get(
+                    f"{self.base_url}/api/product/suppliers/",
+                    headers=self.headers,
+                    params={"limit": max_suppliers, "active": True},
+                    timeout=15
+                )
+                
+                if response.status_code == 200:
+                    suppliers_data = response.json()
+                    suppliers = []
+                    
+                    # Handle different response formats
+                    if isinstance(suppliers_data, list):
+                        suppliers = [s.get('id') for s in suppliers_data if s.get('id')]
+                    elif isinstance(suppliers_data, dict) and 'suppliers' in suppliers_data:
+                        suppliers = [s.get('id') for s in suppliers_data['suppliers'] if s.get('id')]
+                    
+                    # Pre-warm supplier products
+                    for supplier_id in suppliers[:max_suppliers]:
+                        self.get_supplier_products(supplier_id)
+                
+            except Exception as e:
+                logger.warning(f"Error pre-warming supplier cache: {str(e)}")
+            
+            # Get list of popular products
+            try:
+                response = requests.get(
+                    f"{self.base_url}/api/product/products/",
+                    headers=self.headers,
+                    params={"limit": max_products, "sort": "popularity"},
+                    timeout=15
+                )
+                
+                if response.status_code == 200:
+                    products_data = response.json()
+                    product_ids = []
+                    
+                    # Handle different response formats
+                    if isinstance(products_data, list):
+                        product_ids = [p.get('id') for p in products_data if p.get('id')]
+                    elif isinstance(products_data, dict) and 'products' in products_data:
+                        product_ids = [p.get('id') for p in products_data['products'] if p.get('id')]
+                    
+                    # Use batch method if available
+                    self.get_products_batch(product_ids)
+                    
+            except Exception as e:
+                logger.warning(f"Error pre-warming product cache: {str(e)}")
+            
+            # Use any other endpoints you need to warm up
+            
+        except Exception as e:
+            logger.error(f"Error during cache pre-warming: {str(e)}")
+            
+        return self.get_cache_stats()

@@ -150,13 +150,34 @@ class UserServiceConnector:
             return [s for s in self.dummy_suppliers.values() if s.get('active', True)]
         
         try:
+            # Try the active endpoint first
             response = requests.get(
                 f"{self.base_url}/api/v1/suppliers/active/",
                 headers=self.headers,
                 timeout=self.timeout
             )
+            
+            # If 404 error, use the main suppliers endpoint with an active filter
+            if response.status_code == 404:
+                response = requests.get(
+                    f"{self.base_url}/api/v1/suppliers/",
+                    headers=self.headers,
+                    params={"active": "true"},
+                    timeout=self.timeout
+                )
+            
             response.raise_for_status()
-            return response.json()
+            suppliers_data = response.json()
+            
+            # Different APIs might return data in different formats
+            # Check if it's a list or has a 'suppliers' field
+            if isinstance(suppliers_data, list):
+                return suppliers_data
+            elif isinstance(suppliers_data, dict) and 'suppliers' in suppliers_data:
+                return suppliers_data['suppliers']
+            else:
+                return suppliers_data
+                
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching active suppliers: {str(e)}")
             return []
@@ -180,11 +201,22 @@ class UserServiceConnector:
             return {"compliance_score": supplier.get('compliance_score', 5.0)}
             
         try:
+            # Try the compliance endpoint first
             response = requests.get(
                 f"{self.base_url}/api/v1/suppliers/{supplier_id}/compliance/",
                 headers=self.headers,
                 timeout=self.timeout
             )
+            
+            # If 404 error, try to get it from the main supplier data
+            if response.status_code == 404:
+                supplier = self.get_supplier(supplier_id)
+                if supplier and 'compliance_score' in supplier:
+                    return {"compliance_score": supplier.get('compliance_score', 5.0)}
+                else:
+                    # Return default value if no compliance data found
+                    return {"compliance_score": 5.0}
+                    
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:

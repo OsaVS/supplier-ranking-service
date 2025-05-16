@@ -466,4 +466,178 @@ class CacheDebugView(APIView):
             return Response(
                 {"error": f"Failed to retrieve cache stats: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UpdateRankingsView(APIView):
+    """
+    Explicitly update SupplierRanking records for suppliers.
+    This endpoint can be used to ensure rankings are calculated and stored in the database.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        supplier_id = request.data.get("supplier_id")
+        
+        try:
+            environment = SupplierEnvironment()
+            agent = SupplierRankingAgent()
+            state_mapper = StateMapper()
+            user_service = UserServiceConnector()
+            metrics_service = MetricsService()
+            
+            # If specific supplier_id provided, update just that one
+            if supplier_id:
+                # Check if supplier exists
+                supplier = user_service.get_supplier(supplier_id)
+                if not supplier:
+                    return Response(
+                        {"error": f"Supplier with ID {supplier_id} not found"},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                
+                # Get current state
+                state = state_mapper.get_supplier_state(supplier_id)
+                
+                # Get best action for this state
+                action = agent.get_best_action(state)
+                
+                # Update ranking
+                ranking = environment.update_rankings(supplier_id, action)
+                
+                if ranking:
+                    return Response({
+                        "message": f"Ranking updated for supplier {supplier_id}",
+                        "supplier_id": supplier_id,
+                        "rank": ranking.rank,
+                        "tier": ranking.tier,
+                        "overall_score": ranking.overall_score,
+                        "date": ranking.date
+                    })
+                else:
+                    return Response(
+                        {"error": f"Failed to update ranking for supplier {supplier_id}"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+            else:
+                # Get all suppliers
+                suppliers = user_service.get_active_suppliers()
+                
+                updated_suppliers = []
+                for supplier in suppliers:
+                    # Extract supplier ID based on user_service response format
+                    current_supplier_id = None
+                    if 'id' in supplier:
+                        current_supplier_id = supplier['id']
+                    elif 'user' in supplier and 'id' in supplier['user']:
+                        current_supplier_id = supplier['user']['id']
+                    
+                    if not current_supplier_id:
+                        continue
+                    
+                    try:
+                        # Get current state
+                        state = state_mapper.get_supplier_state(current_supplier_id)
+                        
+                        # Get best action for this state
+                        action = agent.get_best_action(state)
+                        
+                        # Update ranking
+                        ranking = environment.update_rankings(current_supplier_id, action)
+                        
+                        if ranking:
+                            updated_suppliers.append({
+                                "supplier_id": current_supplier_id,
+                                "rank": ranking.rank,
+                                "tier": ranking.tier,
+                                "overall_score": ranking.overall_score
+                            })
+                    except Exception as e:
+                        logger.error(f"Error updating ranking for supplier {current_supplier_id}: {str(e)}")
+                
+                # Log the batch update event
+                RankingEvent.objects.create(
+                    event_type='RANKINGS_UPDATED',
+                    description=f"Bulk update of supplier rankings",
+                    metadata={
+                        'suppliers_updated': len(updated_suppliers),
+                        'date': date.today().isoformat()
+                    }
+                )
+                
+                return Response({
+                    "message": f"Updated rankings for {len(updated_suppliers)} suppliers",
+                    "suppliers": updated_suppliers,
+                    "date": date.today().isoformat()
+                })
+                
+        except Exception as e:
+            logger.error(f"Error in update_rankings: {str(e)}")
+            return Response(
+                {"error": f"Failed to update rankings: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def get(self, request):
+        """
+        Get latest rankings for all suppliers or a specific supplier
+        """
+        supplier_id = request.query_params.get('supplier_id')
+        
+        try:
+            if supplier_id:
+                # Get ranking for specific supplier
+                ranking = SupplierRanking.objects.filter(supplier_id=supplier_id).order_by('-date').first()
+                
+                if not ranking:
+                    return Response(
+                        {"message": f"No ranking found for supplier {supplier_id}"},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                
+                return Response({
+                    "supplier_id": ranking.supplier_id,
+                    "supplier_name": ranking.supplier_name,
+                    "rank": ranking.rank,
+                    "tier": ranking.tier,
+                    "overall_score": ranking.overall_score,
+                    "quality_score": ranking.quality_score,
+                    "delivery_score": ranking.delivery_score,
+                    "price_score": ranking.price_score,
+                    "service_score": ranking.service_score,
+                    "date": ranking.date
+                })
+            else:
+                # Get latest rankings for all suppliers
+                # Use a subquery to get the latest date for each supplier
+                from django.db.models import Max, OuterRef, Subquery
+                
+                latest_dates = SupplierRanking.objects.values('supplier_id').annotate(
+                    latest_date=Max('date')
+                )
+                
+                latest_rankings = SupplierRanking.objects.filter(
+                    supplier_id__in=[item['supplier_id'] for item in latest_dates],
+                    date__in=[item['latest_date'] for item in latest_dates]
+                ).order_by('rank')
+                
+                rankings_data = [{
+                    "supplier_id": ranking.supplier_id,
+                    "supplier_name": ranking.supplier_name,
+                    "rank": ranking.rank,
+                    "tier": ranking.tier,
+                    "overall_score": ranking.overall_score,
+                    "date": ranking.date
+                } for ranking in latest_rankings]
+                
+                return Response({
+                    "rankings": rankings_data,
+                    "count": len(rankings_data)
+                })
+                
+        except Exception as e:
+            logger.error(f"Error getting rankings: {str(e)}")
+            return Response(
+                {"error": f"Failed to get rankings: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             ) 
