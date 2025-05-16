@@ -214,6 +214,9 @@ class SupplierRankingAgent:
             iterations (int): Number of training iterations
             supplier_ids (list, optional): List of supplier IDs to train on
         """
+        # Log start of batch training
+        logger.info(f"Starting batch training with {iterations} iterations")
+        
         if supplier_ids is None:
             # Get all suppliers and extract IDs, handling both direct id and nested user.id structures
             suppliers = self.supplier_service.get_all_suppliers()
@@ -224,10 +227,72 @@ class SupplierRankingAgent:
                     supplier_ids.append(supplier['id'])
                 elif 'user' in supplier and 'id' in supplier['user']:
                     supplier_ids.append(supplier['user']['id'])
+            
+            logger.info(f"Using all {len(supplier_ids)} suppliers for batch training")
+        else:
+            logger.info(f"Using {len(supplier_ids)} specified suppliers for batch training")
         
-        for _ in range(iterations):
-            for supplier_id in supplier_ids:
-                self.rank_supplier(supplier_id, update_ranking=False, exploration=True)
+        # Pre-load supplier states to reduce repeated API calls
+        supplier_states = {}
+        
+        # Prime the cache with initial states for all suppliers
+        for supplier_id in supplier_ids:
+            try:
+                # Get current state once for each supplier
+                state = self.environment.get_state(supplier_id)
+                if state:
+                    supplier_states[supplier_id] = state
+            except Exception as e:
+                logger.error(f"Error getting initial state for supplier {supplier_id}: {str(e)}")
+        
+        logger.info(f"Preloaded states for {len(supplier_states)} suppliers")
+        
+        # Execute training iterations
+        for i in range(iterations):
+            logger.info(f"Starting training iteration {i+1}/{iterations}")
+            
+            # Process suppliers in batches to improve performance
+            batch_size = 10  # Process 10 suppliers at a time
+            for start_idx in range(0, len(supplier_ids), batch_size):
+                batch = supplier_ids[start_idx:start_idx + batch_size]
+                
+                for supplier_id in batch:
+                    try:
+                        # Get the preloaded state if available
+                        current_state = supplier_states.get(supplier_id)
+                        
+                        # If no state was preloaded, get it now
+                        if not current_state:
+                            current_state = self.environment.get_state(supplier_id)
+                            supplier_states[supplier_id] = current_state
+                        
+                        # Skip if we couldn't get a valid state
+                        if not current_state:
+                            logger.warning(f"Skipping supplier {supplier_id} - no valid state")
+                            continue
+                        
+                        # Available actions for this state
+                        available_actions = self.environment.get_actions(current_state)
+                        
+                        # Select action with exploration
+                        selected_action = self.select_action(current_state, available_actions, exploration=True)
+                        
+                        # Get reward
+                        reward = self.environment.get_reward(supplier_id, current_state, selected_action)
+                        
+                        # Get next state
+                        next_state = self.environment.next_state(supplier_id, selected_action)
+                        
+                        # Update Q-value
+                        self.learn(current_state, selected_action, reward, next_state)
+                        
+                        # Update the state in our cache for next iteration
+                        supplier_states[supplier_id] = next_state
+                        
+                    except Exception as e:
+                        logger.error(f"Error training for supplier {supplier_id}: {str(e)}")
+        
+        logger.info("Batch training completed")
     
     def get_q_table(self, supplier_id=None):
         """

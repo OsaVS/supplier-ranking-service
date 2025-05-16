@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
-from datetime import date
+from datetime import date, datetime
 import logging
 import hashlib
 
@@ -428,5 +428,42 @@ class QTableView(APIView):
             logger.error(f"Error retrieving Q-table: {str(e)}")
             return Response(
                 {"error": f"Failed to retrieve Q-table: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class CacheDebugView(APIView):
+    """
+    Debug view to check cache statistics and clear cache if needed
+    """
+    permission_classes = [AllowAny]
+    
+    def get(self, request):
+        try:
+            from connectors.warehouse_service_connector import WarehouseServiceConnector
+            
+            # Get cache stats
+            cache_stats = WarehouseServiceConnector.get_cache_stats()
+            
+            # Count active suppliers (warm up some cache entries)
+            user_service = UserServiceConnector()
+            suppliers_count = len(user_service.get_active_suppliers())
+            
+            # Optionally clear the cache
+            if request.query_params.get('clear', 'false').lower() == 'true':
+                WarehouseServiceConnector.clear_cache()
+                cache_stats = WarehouseServiceConnector.get_cache_stats()
+                
+            return Response({
+                "cache_stats": cache_stats,
+                "active_suppliers": suppliers_count,
+                "timestamp": datetime.now().isoformat(),
+                "note": "Use ?clear=true to clear the cache"
+            })
+            
+        except Exception as e:
+            logger.error(f"Error retrieving cache stats: {str(e)}")
+            return Response(
+                {"error": f"Failed to retrieve cache stats: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             ) 

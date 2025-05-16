@@ -292,12 +292,13 @@ class MetricsService:
         )
         
         # Get service metrics from performance records
-        responsiveness_score = [record.get('avg_responsiveness', 5.0) for record in performance_records]
+        responsiveness_scores = [record.get('avg_responsiveness', 5.0) for record in performance_records]
         fill_rate = [record.get('fill_rate', 0.9) for record in performance_records]
         order_accuracy = [record.get('order_accuracy_rate', 0.9) for record in performance_records]
 
         issue_resolution_time = 24.0  # Hours
-        # scale resopnsiveness to 0-10
+        # scale responsiveness to 0-10
+        responsiveness_score = sum(responsiveness_scores) / len(responsiveness_scores) if responsiveness_scores else 5.0
         
         # Convert to 0-10 scales where needed
         fill_rate_score = (sum(fill_rate) / len(fill_rate) if fill_rate else 0.9) * 10
@@ -318,7 +319,7 @@ class MetricsService:
             'service_score': service_score,
             'responsiveness': responsiveness_score,
             'issue_resolution_time': issue_resolution_score,
-            'fill_rate': fill_rate,
+            'fill_rate': fill_rate_score,
             'order_accuracy': order_accuracy_score
         }
     

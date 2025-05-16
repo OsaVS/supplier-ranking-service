@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class UserServiceConnector:
     """Connector to fetch user and supplier data from the User Service"""
     
-    def __init__(self, use_dummy_data=True):
+    def __init__(self, use_dummy_data=False):
         """Initialize connector with base URL and auth credentials from settings"""
         # Use environment variable first, then settings
         self.base_url = os.environ.get('AUTH_SERVICE_URL', 'http://localhost:8000')
@@ -56,7 +56,7 @@ class UserServiceConnector:
         
         # Generate suppliers with IDs 1-12
         self.dummy_suppliers = {}
-        for i in range(1, 13):
+        for i in range(100, 113):
             # Use deterministic random based on supplier ID
             random.seed(i)
             

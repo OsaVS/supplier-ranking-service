@@ -15,14 +15,42 @@ from connectors.order_service_connector import OrderServiceConnector
 
 logger = logging.getLogger(__name__)
 
+# Singleton instances of connectors to prevent multiple instances
+# and ensure shared caching
+_user_service_instance = None
+_warehouse_service_instance = None
+_order_service_instance = None
+
+def get_user_service():
+    """Get or create a singleton instance of UserServiceConnector"""
+    global _user_service_instance
+    if not _user_service_instance:
+        _user_service_instance = UserServiceConnector()
+    return _user_service_instance
+
+def get_warehouse_service():
+    """Get or create a singleton instance of WarehouseServiceConnector"""
+    global _warehouse_service_instance
+    if not _warehouse_service_instance:
+        _warehouse_service_instance = WarehouseServiceConnector()
+    return _warehouse_service_instance
+
+def get_order_service():
+    """Get or create a singleton instance of OrderServiceConnector"""
+    global _order_service_instance
+    if not _order_service_instance:
+        _order_service_instance = OrderServiceConnector()
+    return _order_service_instance
+
 class SupplierService:
     """Service for managing supplier operations through external service connectors"""
     
     def __init__(self):
         """Initialize service with connectors to external services"""
-        self.user_service = UserServiceConnector()
-        self.warehouse_service = WarehouseServiceConnector()
-        self.order_service = OrderServiceConnector()
+        self.user_service = get_user_service()
+        self.warehouse_service = get_warehouse_service()
+        self.order_service = get_order_service()
+        logger.debug("Initialized SupplierService with singleton connectors")
     
     def get_active_suppliers(self):
         """

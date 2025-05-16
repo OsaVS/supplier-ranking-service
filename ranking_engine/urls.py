@@ -4,7 +4,8 @@ from .api_views import (
     SupplierRankingView,
     ManualTrainingView,
     QValueView,
-    QTableView
+    QTableView,
+    CacheDebugView
 )
 
 app_name = 'ranking_engine'  # Add app namespace
@@ -16,4 +17,5 @@ urlpatterns = [
     path('train/manual/', ManualTrainingView.as_view(), name='train_manual'),
     path('qvalue/', QValueView.as_view(), name='qvalue'),
     path('qtable/', QTableView.as_view(), name='qtable'),
+    path('debug/cache/', CacheDebugView.as_view(), name='debug_cache'),
 ] 
