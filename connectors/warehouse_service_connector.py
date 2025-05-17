@@ -253,7 +253,7 @@ class WarehouseServiceConnector:
             logger.info(f"API call: get_supplier_products for supplier_id={supplier_id}")
             # Updated to match actual API endpoint
             response = requests.get(
-                f"{self.base_url}/api/product/products-by-supplier/",
+                f"{self.base_url}/api/product/products-by-supplier",
                 params={"supplier_id": supplier_id},
                 headers=self.headers,
                 timeout=self.timeout
@@ -303,7 +303,7 @@ class WarehouseServiceConnector:
             logger.info(f"API call: get_product_suppliers for product_id={product_id}")
             # Direct API call instead of making nested calls
             response = requests.get(
-                f"{self.base_url}/api/product/suppliers-by-product/",
+                f"{self.base_url}/api/product/suppliers-by-product",
                 params={"product_id": product_id},
                 headers=self.headers,
                 timeout=self.timeout
@@ -382,7 +382,7 @@ class WarehouseServiceConnector:
             logger.info(f"API call: get_suppliers_by_product for product_id={product_id}")
             # Get suppliers that offer this product
             response = requests.get(
-                f"{self.base_url}/api/product/suppliers-by-product/",
+                f"{self.base_url}/api/product/suppliers-by-product",
                 params={"product_id": product_id},
                 headers=self.headers,
                 timeout=self.timeout
