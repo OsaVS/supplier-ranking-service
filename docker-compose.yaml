@@ -1,0 +1,52 @@
+services:
+  supplier-ranking-service:
+    container_name: supplier-ranking-service
+    build:
+      context: .
+      dockerfile : Dockerfile
+    ports:
+      - "8004:8000"
+    networks:
+     - scms
+    env_file:
+     - .env
+    # Idk its very slow to train, even with this no difference
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+
+  supplier-ranking-postgres:
+    image: postgres:15
+    container_name: supplier-ranking-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: supplier_user
+      POSTGRES_PASSWORD: supplier_pass
+      POSTGRES_DB: suplier_ranking_db
+    ports:
+      - 15435:5432
+    networks:
+     - scms
+    volumes:
+      - ranking_postgres:/var/lib/postgresql/data
+  
+  adminer:
+    image: adminer
+    container_name: sr_adminer
+    restart: always
+    ports:
+      - "8282:8080"
+    depends_on:
+      - supplier-ranking-postgres
+    networks:
+     - scms
+
+volumes:
+  ranking_postgres:
+
+networks:
+  scms:
+    external: true
+    name: scms-network
