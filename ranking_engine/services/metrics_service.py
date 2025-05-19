@@ -48,26 +48,13 @@ class MetricsService:
                 is_active=True
             )
     
-    def calculate_quality_metrics(self, supplier_id, days=90):
+    def calculate_quality_metrics(self, supplier_id, days=90, transactions=None, performance_records=None):
         """
         Calculates quality-related metrics for a supplier
         
         Returns:
             dict: Dictionary containing quality metrics
-        """
-        start_date = timezone.now() - timedelta(days=days)
-        
-        # Get transactions from Order Service
-        transactions = self.order_service.get_supplier_transactions(
-            supplier_id=supplier_id,
-            start_date=start_date
-        )
-        
-        # Get performance records from Order Service
-        performance_records = self.order_service.get_supplier_performance_records(
-            supplier_id=supplier_id,
-            start_date=start_date
-        )
+        """  
         
         # Calculate quality metrics from transactions
         total_orders = len(transactions)
@@ -115,7 +102,7 @@ class MetricsService:
             'quantity_analyzed': total_quantity
         }
     
-    def calculate_delivery_metrics(self, supplier_id, days=90):
+    def calculate_delivery_metrics(self, supplier_id, days=90, transactions=None, performance_records=None):
         """
         Calculates delivery-related metrics for a supplier
         
@@ -123,20 +110,6 @@ class MetricsService:
             dict: Dictionary containing delivery metrics
         """
         from datetime import datetime
-        
-        start_date = date.today() - timedelta(days=days)
-        
-        # Get transactions from Order Service
-        transactions = self.order_service.get_supplier_transactions(
-            supplier_id=supplier_id,
-            start_date=start_date
-        )
-        
-        # Get performance records
-        performance_records = self.order_service.get_supplier_performance_records(
-            supplier_id=supplier_id,
-            start_date=start_date
-        )
         
         # Focus on completed transactions
         completed_transactions = [
@@ -201,20 +174,13 @@ class MetricsService:
             'transactions_analyzed': total_delivered
         }
     
-    def calculate_price_metrics(self, supplier_id, days=90):
+    def calculate_price_metrics(self, supplier_id, days=90, transactions=None, performance_records=None):
         """
         Calculates price-related metrics for a supplier
         
         Returns:
             dict: Dictionary containing price metrics
         """
-        start_date = date.today() - timedelta(days=days)
-        
-        # Get performance records from Order Service
-        performance_records = self.order_service.get_supplier_performance_records(
-            supplier_id=supplier_id,
-            start_date=start_date
-        )
         
         # Get average price competitiveness from performance records
         price_comp_scores = [record.get('price_competitiveness', 5.0) for record in performance_records]
@@ -275,21 +241,13 @@ class MetricsService:
             'products_analyzed': len(product_price_scores)
         }
     
-    def calculate_service_metrics(self, supplier_id, days=90):
+    def calculate_service_metrics(self, supplier_id, days=90, transactions=None, performance_records=None):
         """
         Calculates service-related metrics for a supplier
         
         Returns:
             dict: Dictionary containing service metrics
         """
-
-        start_date = date.today() - timedelta(days=days)
-        
-        # Get performance records from Order Service
-        performance_records = self.order_service.get_supplier_performance_records(
-            supplier_id=supplier_id,
-            start_date=start_date
-        )
         
         # Get service metrics from performance records
         responsiveness_scores = [record.get('avg_responsiveness', 5.0) for record in performance_records]
@@ -298,7 +256,7 @@ class MetricsService:
 
         issue_resolution_time = 24.0  # Hours
         # scale responsiveness to 0-10
-        responsiveness_score = sum(responsiveness_scores) / len(responsiveness_scores) if responsiveness_scores else 5.0
+        responsiveness_score = (sum(responsiveness_scores) / 10) / len(responsiveness_scores) if responsiveness_scores else 5.0
         
         # Convert to 0-10 scales where needed
         fill_rate_score = (sum(fill_rate) / len(fill_rate) if fill_rate else 0.9) * 10
@@ -332,12 +290,26 @@ class MetricsService:
         """
         # Get active configuration for weights
         config = self.get_active_configuration()
+
+        start_date = timezone.now() - timedelta(days=days)
+        
+        # Get transactions from Order Service
+        transactions = self.order_service.get_supplier_transactions(
+            supplier_id=supplier_id,
+            start_date=start_date
+        )
+        
+        # Get performance records from Order Service
+        performance_records = self.order_service.get_supplier_performance_records(
+            supplier_id=supplier_id,
+            start_date=start_date
+        )
         
         # Calculate individual metric categories
-        quality_metrics = self.calculate_quality_metrics(supplier_id, days)
-        delivery_metrics = self.calculate_delivery_metrics(supplier_id, days)
-        price_metrics = self.calculate_price_metrics(supplier_id, days)
-        service_metrics = self.calculate_service_metrics(supplier_id, days)
+        quality_metrics = self.calculate_quality_metrics(supplier_id, days, transactions, performance_records)
+        delivery_metrics = self.calculate_delivery_metrics(supplier_id, days, transactions, performance_records)
+        price_metrics = self.calculate_price_metrics(supplier_id, days, transactions, performance_records)
+        service_metrics = self.calculate_service_metrics(supplier_id, days, transactions, performance_records)
         
         # Get supplier info to access compliance score
         supplier_info = self.get_supplier_info(supplier_id)
@@ -401,7 +373,7 @@ class MetricsService:
         
     # New functions to satisfy the requirements of the environment.py file
     
-    def get_quality_metrics(self, supplier_id, days=90):
+    def get_quality_metrics(self, supplier_id, days=90, transactions=None, performance_records=None):
         """
         Retrieves quality metrics for a supplier.
         This function is a wrapper around calculate_quality_metrics for use by the environment.
@@ -413,9 +385,9 @@ class MetricsService:
         Returns:
             dict: Dictionary containing quality metrics
         """
-        return self.calculate_quality_metrics(supplier_id, days)
+        return self.calculate_quality_metrics(supplier_id, days, transactions, performance_records)
 
-    def get_delivery_metrics(self, supplier_id, days=90):
+    def get_delivery_metrics(self, supplier_id, days=90, transactions=None, performance_records=None):
         """
         Retrieves delivery metrics for a supplier.
         This function is a wrapper around calculate_delivery_metrics for use by the environment.
@@ -427,9 +399,9 @@ class MetricsService:
         Returns:
             dict: Dictionary containing delivery metrics
         """
-        return self.calculate_delivery_metrics(supplier_id, days)
+        return self.calculate_delivery_metrics(supplier_id, days, transactions, performance_records)
 
-    def get_price_metrics(self, supplier_id, days=90):
+    def get_price_metrics(self, supplier_id, days=90, transactions=None, performance_records=None):
         """
         Retrieves price metrics for a supplier.
         This function is a wrapper around calculate_price_metrics for use by the environment.
@@ -441,9 +413,9 @@ class MetricsService:
         Returns:
             dict: Dictionary containing price metrics
         """
-        return self.calculate_price_metrics(supplier_id, days)
+        return self.calculate_price_metrics(supplier_id, days, transactions, performance_records)
 
-    def get_service_metrics(self, supplier_id, days=90):
+    def get_service_metrics(self, supplier_id, days=90, transactions=None, performance_records=None):
         """
         Retrieves service metrics for a supplier.
         This function is a wrapper around calculate_service_metrics for use by the environment.
@@ -455,7 +427,7 @@ class MetricsService:
         Returns:
             dict: Dictionary containing service metrics
         """
-        return self.calculate_service_metrics(supplier_id, days)
+        return self.calculate_service_metrics(supplier_id, days, transactions, performance_records)
         
     def get_supplier_info(self, supplier_id):
         """
@@ -502,10 +474,25 @@ class MetricsService:
         Returns:
             dict: Dictionary containing all supplier metrics
         """
-        quality_metrics = self.get_quality_metrics(supplier_id, days)
-        delivery_metrics = self.get_delivery_metrics(supplier_id, days)
-        price_metrics = self.get_price_metrics(supplier_id, days)
-        service_metrics = self.get_service_metrics(supplier_id, days)
+
+        start_date = timezone.now() - timedelta(days=days)
+        
+        # Get transactions from Order Service
+        transactions = self.order_service.get_supplier_transactions(
+            supplier_id=supplier_id,
+            start_date=start_date
+        )
+        
+        # Get performance records from Order Service
+        performance_records = self.order_service.get_supplier_performance_records(
+            supplier_id=supplier_id,
+            start_date=start_date
+        )
+
+        quality_metrics = self.get_quality_metrics(supplier_id, days, transactions, performance_records)    
+        delivery_metrics = self.get_delivery_metrics(supplier_id, days, transactions, performance_records)
+        price_metrics = self.get_price_metrics(supplier_id, days, transactions, performance_records)
+        service_metrics = self.get_service_metrics(supplier_id, days, transactions, performance_records)
         
         # Combine all metrics
         metrics = {
